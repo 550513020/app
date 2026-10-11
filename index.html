@@ -18025,14 +18025,14 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
    谱键 P2K · 公网识谱通道（自动发现）
    ----------------------------------------------------------------------------
    AI 识谱需要 Python + ONNX 模型，浏览器跑不了。
-   但电脑上的服务通过 Cloudflare 隧道有了一条 https 公网地址，
-   地址由电脑上的守护进程定期写进仓库的 tunnel.json。
+   电脑上的服务通过 Cloudflare 隧道有了一条 https 公网地址，
+   地址由电脑上的守护进程写进仓库的 tunnel.json。
 
    本模块：
-     1) 打开页面时读 tunnel.json（带时间戳绕过 CDN 缓存），拿到当前隧道地址
-     2) 本机/局域网打开 → 直接用当前来源
+     1) 打开页面时并行读几个数据源（谁先给出可用地址就用谁），2-3 秒内连上
+     2) 本机 / 局域网打开 → 直接用当前来源
      3) 把地址暴露给页面，识谱请求走它
-     4) 界面上显示状态：已连接 / 电脑未在线
+     4) 界面显示状态：已连接 / 电脑未在线
    ========================================================================== */
 (function () {
   'use strict';
@@ -18042,55 +18042,64 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   function $(id) { return document.getElementById(id); }
 
-  async function readTunnelUrl() {
+  function trySource(src) {
+    return fetch(src, { cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) return '';
+        return res.json().then(function (data) {
+          var url = data && data.url;
+          if (!url) return '';
+          /* 快速验证这条地址真的能用，避免拿到过期地址 */
+          return fetch(url + '/api/health', { cache: 'no-store' })
+            .then(function (check) {
+              if (!check.ok) return '';
+              return check.json().then(function (body) {
+                return (body && body.ok) ? url : '';
+              });
+            })
+            .catch(function () { return ''; });
+        });
+      })
+      .catch(function () { return ''; });
+  }
+
+  function readTunnelUrl() {
     var stamp = Date.now();
-    /* 三个源**并行**取，谁先给出可用地址就用谁（顺序等太慢，用户会以为没反应） */
+    /* 三个源并行取：顺序等太慢，用户会以为没反应 */
     var sources = [
       './tunnel.json?cb=' + stamp,
       'https://cdn.jsdelivr.net/gh/550513020/app@main/tunnel.json?cb=' + stamp,
       'https://raw.githubusercontent.com/550513020/app/main/tunnel.json?cb=' + stamp,
     ];
-
-    async function trySource(src) {
-      try {
-        var res = await fetch(src, { cache: 'no-store' });
-        if (!res.ok) return '';
-        var data = await res.json();
-        var url = data && data.url;
-        if (!url) return '';
-        /* 快速验证地址真的能用（避免拿到过期地址） */
-        var check = await fetch(url + '/api/health', { cache: 'no-store' });
-        if (!check.ok) return '';
-        var body = await check.json();
-        return (body && body.ok) ? url : '';
-      } catch (error) {
-        return '';
-      }
-    }
-
-    /* Promise.any 风格：只要有一个成功就立刻返回 */
     return new Promise(function (resolve) {
       var pending = sources.length;
       var settled = false;
       sources.forEach(function (src) {
         trySource(src).then(function (url) {
-          if (url && !settled) { settled = true; resolve(url); return; }
+          if (url && !settled) {
+            settled = true;
+            resolve(url);
+            return;
+          }
           pending -= 1;
-          if (pending === 0 && !settled) { settled = true; resolve(''); }
+          if (pending <= 0 && !settled) {
+            settled = true;
+            resolve('');
+          }
         });
       });
     });
-  }}
+  }
 
-  async function localBase() {
-    try {
-      var res = await fetch('./api/health', { cache: 'no-store' });
-      if (!res.ok) return '';
-      var data = await res.json();
-      return (data && data.ok) ? location.origin : '';
-    } catch (error) {
-      return '';
-    }
+  function localBase() {
+    return fetch('./api/health', { cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) return '';
+        return res.json().then(function (data) {
+          return (data && data.ok) ? location.origin : '';
+        });
+      })
+      .catch(function () { return ''; });
   }
 
   function chip(text, tone) {
@@ -18107,30 +18116,33 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     } catch (error) { /* 忽略 */ }
   }
 
-  async function discover() {
+  function discover() {
     if (state.probing) return state.probing;
-    state.probing = (async function () {
-      /* 本机 / 局域网：直接用当前来源，最快 */
-      if (!PUBLIC_HOST) {
-        var local = await localBase();
-        if (local) { remember(local); chip('识谱引擎：就绪', 'ok'); return local; }
+    var first = PUBLIC_HOST ? Promise.resolve('') : localBase();
+    state.probing = first.then(function (local) {
+      if (local) {
+        remember(local);
+        chip('识谱引擎：就绪', 'ok');
+        return local;
       }
       chip('识谱引擎：正在连接电脑…', 'warm');
-      var tunnel = await readTunnelUrl();
-      if (tunnel) {
-        remember(tunnel);
-        chip('识谱引擎：已连接（电脑在线）', 'ok');
-        return tunnel;
-      }
-      remember('');
-      chip(PUBLIC_HOST ? '识谱引擎：电脑未在线' : '识谱引擎：待预热', 'warn');
-      return '';
-    })().finally(function () { state.probing = null; });
+      return readTunnelUrl().then(function (tunnel) {
+        if (tunnel) {
+          remember(tunnel);
+          chip('识谱引擎：已连接（电脑在线）', 'ok');
+          return tunnel;
+        }
+        remember('');
+        chip(PUBLIC_HOST ? '识谱引擎：电脑未在线' : '识谱引擎：待预热', 'warn');
+        return '';
+      });
+    });
+    state.probing.then(function () { state.probing = null; },
+      function () { state.probing = null; });
     return state.probing;
   }
 
   function boot() {
-    /* 先复用上次成功的地址，让识谱能立刻用 */
     try {
       var saved = localStorage.getItem('p2k-omr-base-v1');
       if (saved) { state.base = saved; state.ready = true; }
@@ -18145,11 +18157,11 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     }, 1500);
   }
 
-  if (document.readyState === 'complete') setTimeout(boot, 800);
-  else window.addEventListener('load', function () { setTimeout(boot, 800); }, { once: true });
+  if (document.readyState === 'complete') setTimeout(boot, 500);
+  else window.addEventListener('load', function () { setTimeout(boot, 500); }, { once: true });
 
   window.p2kTunnel = {
-    version: '1.1.0',
+    version: '1.2.0',
     discover: discover,
     base: function () { return state.base; },
     isPublicHost: PUBLIC_HOST,
