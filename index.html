@@ -18044,10 +18044,14 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   async function readTunnelUrl() {
     var stamp = Date.now();
+    /* 顺序很讲究：
+       1) 同源 tunnel.json —— GitHub Pages 对 json 缓存很短，最新
+       2) jsDelivr —— 兼容旧仓库，但它有约 12 小时缓存，只作兜底
+       3) raw.githubusercontent —— 部分地区不可达，放最后 */
     var sources = [
-      'https://raw.githubusercontent.com/550513020/app/main/tunnel.json?cb=' + stamp,
-      'https://cdn.jsdelivr.net/gh/550513020/app@main/tunnel.json?cb=' + stamp,
       './tunnel.json?cb=' + stamp,
+      'https://cdn.jsdelivr.net/gh/550513020/app@main/tunnel.json?cb=' + stamp,
+      'https://raw.githubusercontent.com/550513020/app/main/tunnel.json?cb=' + stamp,
     ];
     for (var i = 0; i < sources.length; i++) {
       try {
