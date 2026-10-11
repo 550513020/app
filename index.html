@@ -16590,13 +16590,12 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
 
 <script>/* ============================================================================
-   纯本机账号（用于静态托管版，例如 GitHub Pages）
+   纯本机账号（仅用于没有后端的静态托管版，例如 GitHub Pages）
    ----------------------------------------------------------------------------
-   静态托管没有后端，注册/登录接口会 501。这里提供一套「只存本机」的账号：
-     - 注册/登录都在本机完成（localStorage），不上传任何东西
-     - 登录后曲库、收藏、练习记录都跟着这个本机账号走
-     - 一旦检测到后端可用，就完全不介入（走原来的云端账号）
-   界面上会明确标注是「本机账号」，避免混淆。
+   重要：这个模块**只在确认后端不可用**时才介入。
+   如果后端在（本机 / App / 局域网），它什么都不做，云端账号照常工作。
+   之前的写法在固定延时后包裹按钮，会和账户模块抢 onclick，
+   导致 App 里点了登录却提示"本机上还没有这个账号"——那是这个模块误接管了。
    ========================================================================== */
 (function () {
   'use strict';
@@ -16627,14 +16626,36 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     return data && data.username ? data.username : '';
   }
 
-  /* 后端是否可用：可用就让云端账号接管 */
+  /* 判断「这个页面自己有没有后端」。
+     关键：只看页面自身来源，绝不去探测 127.0.0.1 ——
+     否则在同一台电脑上打开公网页面时，会误判为"有后端"而使本机账号失效
+     （实测过：静态托管页因此报 501，注册登录全废）。
+     判定规则：
+       1) 同源 /api/health 返回 {ok:true} → 有后端（本机 / 局域网）
+       2) 安卓 App 内置页（file://）→ 有后端（走 P2KNative 里配置的电脑地址）
+       3) 其余情况（GitHub Pages 等纯静态托管）→ 没有后端，启用本机账号
+  */
   async function backendAvailable() {
-    try {
-      const res = await fetch('./api/health', { cache: 'no-store' });
-      return res.ok;
-    } catch (error) {
-      return false;
+    async function alive(url) {
+      try {
+        const res = await fetch(url, { cache: 'no-store', method: 'GET' });
+        if (res.status < 200 || res.status >= 300) return false;
+        const raw = await res.text();
+        let payload = null;
+        try {
+          payload = JSON.parse(raw);
+        } catch (error) {
+          return false;   /* 静态服务器 404 会退回 HTML，绝不能当成后端 */
+        }
+        return !!(payload && payload.ok === true);
+      } catch (error) {
+        return false;
+      }
     }
+
+    if (location.protocol === 'file:' || location.protocol === 'null:') return true;  /* 规则 2 */
+    if (await alive('./api/health')) return true;                                     /* 规则 1 */
+    return false;                                                                     /* 规则 3 */
   }
 
   function signUp(username, password) {
@@ -16662,22 +16683,13 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     try { localStorage.removeItem(KEY); } catch (error) { /* 忽略 */ }
   }
 
-  /* 把「本机账号」接进手机端的登录/注册流程（仅在后端不可用时生效） */
-  function attachPhoneLocalAuth() {
+  function attach() {
     if (!/[?&]mode=app/.test(location.search)) return;
+
     const register = document.getElementById('phoneRegister');
     const login = document.getElementById('phoneLoginButton');
-    if (!register || !login) return;
-
-    let useLocal = false;
-    let decided = false;
-
-    const showLocalNotice = () => {
-      const msg = document.getElementById('phoneAuthMsg');
-      if (msg && !msg.textContent) {
-        msg.textContent = '当前是纯网页版（没有电脑后端），账号只保存在这台设备上。';
-      }
-    };
+    if (!register || !login) return false;
+    if (register.__p2kLocalBound || login.__p2kLocalBound) return true;
 
     const finish = (name) => {
       const loginPanel = document.getElementById('phoneLogin');
@@ -16693,55 +16705,64 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
       if (msg) msg.textContent = '已用本机账号登录：' + name + '（数据只在这台设备）';
     };
 
-    const accountOk = async () => {
-      if (!decided) {
-        decided = true;
-        useLocal = !(await backendAvailable());
-        if (useLocal) showLocalNotice();
-      }
-      return useLocal;
-    };
-
     const wrap = (node, kind) => {
-      const original = node.onclick;
-      node.onclick = async (event) => {
-        const local = await accountOk();
-        if (!local) return typeof original === 'function' ? original.call(node, event) : undefined;
+      node.__p2kLocalBound = true;
+      node.addEventListener('click', (event) => {
         const username = (document.getElementById('phoneUsername') || {}).value || '';
         const password = (document.getElementById('phonePassword') || {}).value || '';
         const result = kind === 'register' ? signUp(username, password) : signIn(username, password);
         const msg = document.getElementById('phoneAuthMsg');
         if (!result.ok) {
           if (msg) msg.textContent = result.error;
-          return undefined;
+          return;
         }
+        event.preventDefault();
+        event.stopImmediatePropagation();
         finish(result.username);
-        return undefined;
-      };
-      return node;
+      }, true);   /* 捕获阶段接管，避免被账户模块的 onclick 先处理 */
     };
 
     wrap(register, 'register');
     wrap(login, 'login');
 
-    // 已有本机账号登录态：直接放行
+    const msg = document.getElementById('phoneAuthMsg');
+    if (msg && !msg.textContent) {
+      msg.textContent = '当前是纯网页版（没有电脑后端），账号只保存在这台设备上。';
+    }
+
     const name = currentUser();
     if (name) {
-      backendAvailable().then((up) => {
-        if (!up) finish(name);
-      });
+      finish(name);
+    } else {
+      /* 没有本机账号登录态：直接把登录面板显示出来。
+         纯静态托管页（如 GitHub Pages）本来就没有"更新同步"可言——
+         点它会去唤醒电脑上的服务，而公网页面上做不到，于是界面一直卡着。
+         直接把注册/登录入口摆出来更直接。 */
+      const loginPanel = document.getElementById('phoneLogin');
+      const library = document.getElementById('phoneLibrary');
+      if (loginPanel) loginPanel.hidden = false;
+      if (library) library.hidden = true;
     }
+    return true;
   }
 
-  if (document.readyState === 'complete') {
-    setTimeout(attachPhoneLocalAuth, 800);
-  } else {
-    window.addEventListener('load', () => setTimeout(attachPhoneLocalAuth, 800), { once: true });
-  }
+  /* 必须先确认没有后端，才允许本机账号介入 */
+  (async function boot() {
+    const hasBackend = await backendAvailable();
+    window.__p2kLocalAccountMode = !hasBackend;
+    if (hasBackend) return;        /* 有后端：完全不介入，走云端账号 */
+
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries += 1;
+      if (attach() || tries > 60) clearInterval(timer);
+    }, 400);
+  })();
 
   window.p2kLocalAccount = {
-    version: '1.0.0',
+    version: '1.1.0',
     currentUser, signUp, signIn, signOut, backendAvailable,
+    active: () => !!window.__p2kLocalAccountMode,
   };
 })();
 </script><script>
@@ -16929,6 +16950,80 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   if(document.readyState==='complete')setTimeout(boot,700);
   else window.addEventListener('load',function(){setTimeout(boot,700);},{once:true});
+})();
+</script><script>
+/* P2K_SYNC_BUTTON_FIX：没有后端的静态托管页上点「更新同步」，
+   不要走"唤醒电脑上的服务"那条路（公网页面做不到），而是直接把登录入口显示出来。
+
+   判断必须是【同步】的：之前写成异步探测后再拦截，等 Promise 回来时
+   原处理器已经跑完，"正在启动电脑上的谱键服务…"会一直卡着。 */
+(function(){
+  'use strict';
+
+  var MARK='__p2kSyncBound';
+  var backendKnown=null;        /* true=有后端, false=没有, null=还没判定出 */
+
+  function isNativeAppPage(){
+    return location.protocol==='file:'||location.protocol==='null:';
+  }
+
+  function probeBackend(){
+    return fetch('./api/health',{cache:'no-store',method:'GET'}).then(function(res){
+      if(res.status<200||res.status>=300)return false;
+      return res.text().then(function(raw){
+        try{ return !!(JSON.parse(raw)||{}).ok; }catch(e){ return false; }
+      });
+    }).catch(function(){ return false; });
+  }
+
+  function showLogin(){
+    var login=document.getElementById('phoneLogin');
+    var library=document.getElementById('phoneLibrary');
+    if(login)login.hidden=false;
+    if(library)library.hidden=true;
+    var msg=document.getElementById('phoneAuthMsg');
+    if(msg)msg.textContent='当前是纯网页版（没有电脑后端），账号只保存在这台设备上。注册或登录后就能用。';
+    if(login&&login.scrollIntoView){try{login.scrollIntoView({block:'center'});}catch(e){}}
+  }
+
+  function bind(){
+    var btn=document.getElementById('phoneSyncLibrary');
+    if(!btn||btn[MARK])return !!btn;
+    btn[MARK]=true;
+    btn.addEventListener('click',function(event){
+      if(isNativeAppPage())return;           /* 安卓 App：后端一定有，放行 */
+      if(backendKnown===true)return;         /* 已确认有后端：放行 */
+      if(backendKnown===false){              /* 已确认没有后端：直接给登录入口 */
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        showLogin();
+        return;
+      }
+      /* 首次：同步拦下（避免原逻辑去唤醒服务），同时探测真实情况 */
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      probeBackend().then(function(ok){
+        backendKnown=ok;
+        if(ok){
+          if(btn.onclick){ btn.onclick.call(btn,{preventDefault:function(){},type:'click',target:btn}); }
+        }else{
+          showLogin();
+        }
+      });
+    },true);
+    return true;
+  }
+
+  /* 页面一加载就先判定一次，之后点击就是同步决策，不会再有延迟不确定性 */
+  if(!isNativeAppPage()){
+    probeBackend().then(function(ok){ backendKnown=ok; });
+  }
+
+  var tries=0;
+  var timer=setInterval(function(){
+    tries++;
+    if(bind()||tries>80)clearInterval(timer);
+  },400);
 })();
 </script><script>
 /* P2K_STATIC_REPO：没有后端时（例如 GitHub Pages）改读静态谱库 ./scores/index.json。
