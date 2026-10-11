@@ -16766,86 +16766,6 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
   };
 })();
 </script><script>
-/* P2K_OMR_ROUTE：识谱服务地址判定（打开即可用）
-   - 本机/局域网：直接用本机服务，无需手动启动任何东西（服务已设为开机自启）
-   - 公网 https：浏览器禁止访问回环地址，改给出清晰引导
-*/
-(function(){
-  'use strict';
-  var LOOPBACK='http://127.0.0.1:8766';
-  var isPublicHost=!/^(127\.0\.0\.1|localhost|\[::1\]|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
-  var wasOk=false;
-
-  function markRouted(ok, detail){
-    window.__p2kOmrRoute={ok:ok,detail:detail,host:location.hostname};
-    var chip=document.getElementById('p2kOmrChip');
-    if(chip&&!ok&&isPublicHost){
-      chip.dataset.state='warn';
-      chip.textContent='识谱引擎：需本机打开';
-      chip.title='公网页面受浏览器安全策略限制，无法访问你电脑的 127.0.0.1。请在本机打开 '+LOOPBACK+' 使用 AI 识谱。';
-    }
-  }
-
-  /* 探测本机服务是否可达（本机打开时一定可达） */
-  function probe(force){
-    if(window.__p2kOmrProbing)return window.__p2kOmrProbing;
-    window.__p2kOmrProbing=(async function(){
-      if(isPublicHost){ markRouted(false,'公网页面无法访问回环地址'); return false; }
-      try{
-        var res=await fetch(LOOPBACK+'/api/omr-health',{cache:'no-store'});
-        if(res.ok){ var d=await res.json(); markRouted(!!d.installed,d); wasOk=!!d.installed; return !!d.installed; }
-      }catch(e){}
-      markRouted(false,'本机服务未响应');
-      return false;
-    })().finally(function(){ window.__p2kOmrProbing=null; });
-    return window.__p2kOmrProbing;
-  }
-
-  /* 公网页面上，把「AI 自动识谱」按钮变成引导：点一下就交代清楚该去哪 */
-  function guidePublic(){
-    if(!isPublicHost)return;
-    var btn=document.getElementById('recognize');
-    if(!btn||btn.__p2kGuided)return;
-    btn.__p2kGuided=true;
-    var original=btn.onclick;
-    btn.onclick=async function(event){
-      var ok=await probe();
-      if(ok)return typeof original==='function'?original.call(btn,event):undefined;
-      var box=document.getElementById('p2kOmrGuide');
-      if(!box){
-        box=document.createElement('div');
-        box.id='p2kOmrGuide';
-        box.style.cssText='margin:10px 0;padding:12px 14px;border:1px solid #ffd166;background:#fff9e6;border-radius:10px;font-size:13.5px;line-height:1.7;color:#5c4700';
-        box.innerHTML='<b>AI 识谱需要在你自己的电脑上运行</b><br>'
-          +'公网页面（https）受浏览器安全策略限制，无法访问你电脑的 <code>127.0.0.1</code>。<br>'
-          +'请在<b>同一台电脑</b>上打开：<a href="'+LOOPBACK+'" style="color:#17603c;font-weight:700">'+LOOPBACK+'</a>'
-          +'<br>服务已设为<b>开机自动启动</b>，不用再双击任何东西。'
-          +'<br><span style="color:#8a6d00">手机上想识谱：用本机局域网地址（Wi-Fi 与电脑相同）。</span>';
-        var host=document.getElementById('p2kOmrChip');
-        if(host&&host.parentNode)host.parentNode.insertBefore(box,host.nextSibling);
-        else btn.parentNode.insertBefore(box,btn.nextSibling);
-      }
-      box.scrollIntoView({block:'center'});
-      return undefined;
-    };
-  }
-
-  function boot(){
-    probe();
-    guidePublic();
-    /* 本机服务可能刚启动，前 20 秒多探几次 */
-    var tries=0;
-    var timer=setInterval(function(){
-      tries++;
-      if(wasOk||tries>10){ clearInterval(timer); return; }
-      probe(true);
-    },2000);
-  }
-
-  if(document.readyState==='complete'){ setTimeout(boot,600); }
-  else { window.addEventListener('load',function(){ setTimeout(boot,600); },{once:true}); }
-})();
-</script><script>
 /* P2K_APK_DOWNLOAD：让「下载 Android APK」在各浏览器/WebView 里都能用。
    点击 → 取文件 → Blob 强制下载；失败则给出可复制的直链与安装说明。 */
 (function(){
@@ -18098,6 +18018,128 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     version: '1.0.0',
     uploadFiles: uploadFiles,
     attach: attach,
+  };
+})();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 公网识谱通道（自动发现）
+   ----------------------------------------------------------------------------
+   AI 识谱需要 Python + ONNX 模型，浏览器跑不了。
+   但电脑上的服务通过 Cloudflare 隧道有了一条 https 公网地址，
+   地址由电脑上的守护进程定期写进仓库的 tunnel.json。
+
+   本模块：
+     1) 打开页面时读 tunnel.json（带时间戳绕过 CDN 缓存），拿到当前隧道地址
+     2) 本机/局域网打开 → 直接用当前来源
+     3) 把地址暴露给页面，识谱请求走它
+     4) 界面上显示状态：已连接 / 电脑未在线
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var PUBLIC_HOST = !/^(127\.0\.0\.1|localhost|\[::1\]|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
+  var state = { base: '', ready: false, probing: null };
+
+  function $(id) { return document.getElementById(id); }
+
+  async function readTunnelUrl() {
+    var stamp = Date.now();
+    var sources = [
+      'https://raw.githubusercontent.com/550513020/app/main/tunnel.json?cb=' + stamp,
+      'https://cdn.jsdelivr.net/gh/550513020/app@main/tunnel.json?cb=' + stamp,
+      './tunnel.json?cb=' + stamp,
+    ];
+    for (var i = 0; i < sources.length; i++) {
+      try {
+        var res = await fetch(sources[i], { cache: 'no-store' });
+        if (!res.ok) continue;
+        var data = await res.json();
+        if (data && data.url) {
+          /* 校验这条地址真的能用（避免读到过期地址） */
+          try {
+            var check = await fetch(data.url + '/api/health', { cache: 'no-store' });
+            if (check.ok) {
+              var body = await check.json();
+              if (body && body.ok) return data.url;
+            }
+          } catch (error) { /* 地址过期，继续找 */ }
+        }
+      } catch (error) { /* 换下一个源 */ }
+    }
+    return '';
+  }
+
+  async function localBase() {
+    try {
+      var res = await fetch('./api/health', { cache: 'no-store' });
+      if (!res.ok) return '';
+      var data = await res.json();
+      return (data && data.ok) ? location.origin : '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function chip(text, tone) {
+    var el = $('p2kOmrChip');
+    if (el) { el.textContent = text; el.dataset.state = tone || 'idle'; }
+  }
+
+  function remember(base) {
+    state.base = base || '';
+    state.ready = !!base;
+    try {
+      if (base) localStorage.setItem('p2k-omr-base-v1', base);
+      else localStorage.removeItem('p2k-omr-base-v1');
+    } catch (error) { /* 忽略 */ }
+  }
+
+  async function discover() {
+    if (state.probing) return state.probing;
+    state.probing = (async function () {
+      /* 本机 / 局域网：直接用当前来源，最快 */
+      if (!PUBLIC_HOST) {
+        var local = await localBase();
+        if (local) { remember(local); chip('识谱引擎：就绪', 'ok'); return local; }
+      }
+      chip('识谱引擎：正在连接电脑…', 'warm');
+      var tunnel = await readTunnelUrl();
+      if (tunnel) {
+        remember(tunnel);
+        chip('识谱引擎：已连接（电脑在线）', 'ok');
+        return tunnel;
+      }
+      remember('');
+      chip(PUBLIC_HOST ? '识谱引擎：电脑未在线' : '识谱引擎：待预热', 'warn');
+      return '';
+    })().finally(function () { state.probing = null; });
+    return state.probing;
+  }
+
+  function boot() {
+    /* 先复用上次成功的地址，让识谱能立刻用 */
+    try {
+      var saved = localStorage.getItem('p2k-omr-base-v1');
+      if (saved) { state.base = saved; state.ready = true; }
+    } catch (error) { /* 忽略 */ }
+
+    discover();
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries += 1;
+      if (state.ready || tries > 12) { clearInterval(timer); return; }
+      discover();
+    }, 3000);
+  }
+
+  if (document.readyState === 'complete') setTimeout(boot, 800);
+  else window.addEventListener('load', function () { setTimeout(boot, 800); }, { once: true });
+
+  window.p2kTunnel = {
+    version: '1.1.0',
+    discover: discover,
+    base: function () { return state.base; },
+    isPublicHost: PUBLIC_HOST,
   };
 })();
 </script></body></html>
