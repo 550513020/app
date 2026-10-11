@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>谱键 P2K · 怎么打开 / 给别人用</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; padding:20px; font-family: system-ui, "Microsoft YaHei", sans-serif;
+         background:#f5f8f5; color:#1c2b25; line-height:1.6; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  .lead { color:#4c6659; margin:0 0 18px; }
+  .grid { display:flex; flex-wrap:wrap; gap:16px; }
+  .card { background:#fff; border:1px solid #d8e6dd; border-radius:14px; padding:16px;
+           box-shadow:0 1px 3px rgba(0,0,0,.05); }
+  .card h2 { font-size:16px; margin:0 0 4px; }
+  .hint { margin:0 0 10px; color:#5b7568; font-size:13px; }
+  .url { margin:8px 0 0; font-size:12.5px; word-break:break-all; }
+  .url a { color:#17603c; }
+  .note { background:#eef7f1; border:1px solid #cfe3d8; border-radius:12px;
+           padding:14px 16px; margin-top:20px; }
+  .note h3 { margin:0 0 6px; font-size:15px; }
+  .note ul { margin:6px 0 0 18px; padding:0; }
+  code { background:#eaf2ec; padding:1px 5px; border-radius:5px; font-size:12.5px; }
+</style>
+</head>
+<body>
+  <h1>谱键 P2K · 怎么打开</h1>
+  <p class="lead">下面是这台电脑上服务的访问方式。手机扫码即可，电脑直接点链接。</p>
+
+  <div class="grid">
+      <section class="card">
+        <h2>手机练习版</h2>
+        <p class="hint">用手机相机扫这个，直接开始练琴</p>
+        <img src="./qr/phone-practice.png" alt="手机练习版 二维码" width="260" height="260">
+        <p class="url"><a href="http://192.168.1.2:8766/?mode=app">http://192.168.1.2:8766/?mode=app</a></p>
+      </section>
+      <section class="card">
+        <h2>电脑网页端</h2>
+        <p class="hint">在电脑浏览器里打开</p>
+        <img src="./qr/pc-web.png" alt="电脑网页端 二维码" width="260" height="260">
+        <p class="url"><a href="http://192.168.1.2:8766/">http://192.168.1.2:8766/</a></p>
+      </section>
+      <section class="card">
+        <h2>安卓 App 安装包</h2>
+        <p class="hint">想装 App 就扫这个（约 2.6 MB）</p>
+        <img src="./qr/apk-download.png" alt="安卓 App 安装包 二维码" width="260" height="260">
+        <p class="url"><a href="http://192.168.1.2:8766/downloads/P2K-debug.apk">http://192.168.1.2:8766/downloads/P2K-debug.apk</a></p>
+      </section></div>
+
+  <div class="note">
+    <h3>给别人用的注意事项</h3>
+    <ul>
+      <li>手机上要<b>连同一个 Wi-Fi</b>，上面的地址才有效。</li>
+      <li>别人打开后需要<b>自己注册账号</b>（账号 + 密码，不需要邮箱或手机验证），
+          各自的曲库与收藏互相独立。</li>
+      <li>手机上可以<b>自己完成转谱</b>：在「音频库」里导入音频，分析在手机本机进行，
+          <b>不依赖这台电脑</b>。</li>
+      <li>电脑上的服务要保持开启（双击 <code>②手动启动服务.bat</code>）；
+          关掉服务这些地址就失效了。</li>
+      <li>想让<b>不在同一 Wi-Fi</b> 的人也能打开，用 GitHub Pages 托管：
+          见项目里的 <code>docs/公网访问-实测结论.md</code>。</li>
+    </ul>
+  </div>
+
+  <p style="margin-top:18px;color:#8aa094;font-size:12px">
+    生成时间：2026-10-11 11:25 · 本页可离线打开
+  </p>
+</body>
+</html>

@@ -1,0 +1,4 @@
+fastapi
+uvicorn[standard]
+python-multipart
+homr==0.7.0

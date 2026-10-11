@@ -1,0 +1,14 @@
+{
+  "name": "谱键 P2K 钢琴练习",
+  "short_name": "谱键 P2K",
+  "start_url": "./index.html?mode=app",
+  "display": "standalone",
+  "scope": "./",
+  "background_color": "#f4f6f2",
+  "theme_color": "#f4f6f2",
+  "icons": [
+    { "src": "./assets/p2k-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "lang": "zh-CN",
+  "description": "导入琴谱，标注音符，熟悉琴键并循环练习。"
+}

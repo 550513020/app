@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "items": [
+    {
+      "id": "static:示例曲谱.pdf",
+      "title": "示例曲谱",
+      "source": "托管示例",
+      "size": 100249,
+      "sizeText": "0.10 MB",
+      "url": "./scores/示例曲谱.pdf"
+    },
+    {
+      "id": "static:示例曲谱2.pdf",
+      "title": "示例曲谱2",
+      "source": "托管示例",
+      "size": 100249,
+      "sizeText": "0.10 MB",
+      "url": "./scores/示例曲谱2.pdf"
+    }
+  ],
+  "note": "静态谱库（GitHub Pages 用）"
+}

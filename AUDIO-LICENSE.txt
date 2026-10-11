@@ -1,0 +1,4 @@
+Salamander Grand Piano V3 samples by Alexander Holm.
+Creative Commons Attribution 3.0 Unported (CC BY 3.0).
+Original sample set: https://github.com/sfzinstruments/SalamanderGrandPiano
+The individual MP3 sample files are provided by the Tone.js Salamander distribution.
