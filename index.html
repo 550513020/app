@@ -17025,6 +17025,747 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     if(bind()||tries>80)clearInterval(timer);
   },400);
 })();
+</script><script>/* ============================================================================
+   谱键 P2K · App 体验增强包
+   ----------------------------------------------------------------------------
+   解决四件事：
+     1) 登录后自动同步（不再需要手动点「更新同步」）
+     2) 曲谱 PDF / 音频库清单落本机 → 手机内存里就能搜索、随时看
+     3) 新增「手机练习模式」：屏幕当琴键，多指同时按能同时出声
+     4) 手机练习模式里，退出/暂停等按钮收进左上角一个菜单，默认不挡琴键
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var LOG_KEY = 'p2k-last-sync-v1';
+  var AUDIO_KEY = 'p2k-audio-index-v1';
+
+  function $(id) { return document.getElementById(id); }
+  function isPhone() { return /[?&]mode=app/.test(location.search); }
+
+  function readJson(key, fallback) {
+    try { var raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
+    catch (e) { return fallback; }
+  }
+  function writeJson(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
+  }
+
+  /* ---------------------------------------------------------------- 自动同步 */
+  var syncing = false;
+
+  function notice(text, tone) {
+    var el = $('phoneLibraryStatus') || $('phoneServiceNotice');
+    if (el) { el.textContent = text; el.dataset.tone = tone || ''; }
+  }
+
+  async function autoSync(reason) {
+    if (syncing) return false;
+    if (!token()) return false;                       /* 没登录就不动 */
+    /* 用户已经在看谱/练习时，别去刷新界面，否则会把当前界面顶掉
+       （实测：p2kRenderLibraryOffline 会把预览/练习面板重新隐藏） */
+    var busy = false;
+    try {
+      var preview = document.getElementById('phonePreview');
+      var practice = document.getElementById('phonePractice');
+      busy = (preview && preview.hidden === false) || (practice && practice.hidden === false) ||
+        document.body.classList.contains('phone-piano-mode');
+    } catch (e) { /* 忽略 */ }
+    if (busy) { notice('稍后自动同步（正在看谱）'); return false; }
+
+    syncing = true;
+    try {
+      notice('正在自动同步曲库…');
+      /* 先走页面自带的同步（它负责把曲谱元数据缓存到本机） */
+      if (typeof window.p2kSyncLibraryNow === 'function') {
+        try { await window.p2kSyncLibraryNow(); } catch (e) { /* 继续做我们自己的部分 */ }
+      }
+      await prefetchPdfs();
+      await cacheAudioIndex();
+      writeJson(LOG_KEY, { at: Date.now(), reason: reason || 'auto' });
+      notice('已同步 · ' + new Date().toLocaleTimeString().slice(0, 5));
+      return true;
+    } catch (e) {
+      notice('自动同步失败，可手动点「更新同步」重试');
+      return false;
+    } finally {
+      syncing = false;
+    }
+  }
+
+  /* 自己取 token / API 前缀与 PDF，不依赖模块内部的同名函数
+     （实测 p2kToken / p2kFetchCloudPdf 都是 IIFE 内部的，window 上取不到） */
+  function apiBase() {
+    try {
+      if (typeof P2K_API === 'string' && /^https?:|^\//.test(P2K_API)) return P2K_API;
+    } catch (e) { /* TDZ 或未定义 */ }
+    try {
+      if (typeof P2K_NATIVE_BASE === 'string' && P2K_NATIVE_BASE) return P2K_NATIVE_BASE + '/api';
+    } catch (e) { /* 忽略 */ }
+    /* 实测：服务地址存在 p2k-service-base-v1（只有存过才用） */
+    try {
+      var saved = localStorage.getItem('p2k-service-base-v1');
+      if (saved && /^https?:/.test(saved)) return saved.replace(/\/+$/, '') + '/api';
+    } catch (e) { /* 忽略 */ }
+    return '/api';
+  }
+
+  function token() {
+    var keys = ['p2k-account-token-v2', 'p2k-token', 'p2kAccountToken'];
+    for (var i = 0; i < keys.length; i++) {
+      try {
+        var value = localStorage.getItem(keys[i]);
+        if (value) {
+          if (value.charAt(0) === '"') { try { value = JSON.parse(value); } catch (e) { /* 原样用 */ } }
+          if (typeof value === 'object' && value && value.token) value = value.token;
+          if (value) return String(value);
+        }
+      } catch (e) { /* 忽略 */ }
+    }
+    return '';
+  }
+
+  async function fetchPdf(cloudId) {
+    var res = await fetch(apiBase() + '/library/' + encodeURIComponent(cloudId) + '/pdf', {
+      headers: { Authorization: 'Bearer ' + token() },
+      cache: 'no-store',
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var buf = await res.arrayBuffer();
+    return new Uint8Array(buf);
+  }
+
+  /* 把云端曲谱的 PDF 全部拉到本机（手机内存），之后离线也能看。
+     注意：不要依赖后端返回的 has_pdf 标记 —— 实测那条元数据可能不准
+     （云端明明有 PDF 却传 has_pdf=0）。这里直接逐份尝试拉取，拉不到就跳过。 */
+  async function prefetchPdfs() {
+    if (typeof p2kLocalAll !== 'function' || typeof p2kLocalPut !== 'function') return 0;
+    var rows = await p2kLocalAll();
+    var clouds = rows.filter(function (s) { return s.id && s.id.indexOf('cloud:') === 0; });
+    var done = 0;
+    for (var i = 0; i < clouds.length; i++) {
+      var score = clouds[i];
+      if (score.pdfBytes && score.pdfBytes.length) { done++; continue; }
+      try {
+        var cloudId = score.cloudId || score.id.slice(6);
+        var bytes = await fetchPdf(cloudId);
+        if (bytes && bytes.length) {
+          score.pdfBytes = bytes;
+          score.has_pdf = true;
+          score.cachedAt = Date.now();
+          await p2kLocalPut(score);
+          done++;
+        }
+      } catch (e) { /* 这份没有 PDF 或网络失败，跳过 */ }
+    }
+    return done;
+  }
+
+  /* 缓存音频库清单（本机可搜）。
+     接口返回字段：downloaded / downloadedDir / qqmusicDir / scannedSample */
+  async function cacheAudioIndex() {
+    try {
+      var res = await fetch(apiBase() + '/audio/library', { cache: 'no-store' });
+      if (!res.ok) return 0;
+      var data = await res.json();
+      var items = (data && (data.downloaded || data.items || data.files || data.audio)) || [];
+      var scanned = (data && data.scannedSample) || [];
+      writeJson(AUDIO_KEY, {
+        at: Date.now(),
+        items: items,
+        scanned: scanned,
+        downloadedDir: (data && data.downloadedDir) || '',
+        qqmusicDir: (data && data.qqmusicDir) || '',
+      });
+      return items.length;
+    } catch (e) { return 0; }
+  }
+
+  function audioIndex() { return (readJson(AUDIO_KEY, { items: [] }) || {}).items || []; }
+  function audioMeta() { return readJson(AUDIO_KEY, {}) || {}; }
+
+  /* 本机搜索：曲谱 + 音频（不联网也能用） */
+  async function searchLocal(keyword) {
+    var key = (keyword || '').trim().toLowerCase();
+    var scores = [];
+    try {
+      var rows = (typeof p2kLocalAll === 'function') ? await p2kLocalAll() : [];
+      scores = rows.filter(function (s) { return s.events && s.events.length; })
+        .filter(function (s) { return !key || String(s.title || '').toLowerCase().indexOf(key) >= 0; });
+    } catch (e) { /* 忽略 */ }
+    var audios = audioIndex().filter(function (a) {
+      return !key || String(a.title || a.name || '').toLowerCase().indexOf(key) >= 0;
+    });
+    return { scores: scores, audios: audios };
+  }
+
+  /* ------------------------------------------------- 手机练习模式（屏幕琴键） */
+  var touchState = { active: {}, voices: {} };
+
+  function midiOfKey(el) {
+    var value = el.dataset.midi || el.getAttribute('data-midi') || el.dataset.note || '';
+    var midi = parseInt(value, 10);
+    if (!isNaN(midi)) return midi;
+    var label = (el.textContent || '').trim();
+    var match = /^([A-G])(#?)(-?\d)$/.exec(label);
+    if (!match) return null;
+    var base = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[match[1]];
+    if (base === undefined) return null;
+    return (parseInt(match[3], 10) + 1) * 12 + base + (match[2] ? 1 : 0);
+  }
+
+  function findKeyboard() {
+    return $('phoneKeyboard') || $('phonePianoKeyboard') || $('piano') ||
+      document.querySelector('.phone-keyboard, .phone-keys, #phoneKeys');
+  }
+
+  function pressKey(el) {
+    if (!el || touchState.active[el.dataset.p2kTouchId || '']) return;
+    var midi = midiOfKey(el);
+    if (midi === null) return;
+    el.classList.add('p2k-key-down');
+    /* 同时多点：每个手指各发一个音，互不打断 */
+    try {
+      if (typeof playMidi === 'function') playMidi([midi], true);
+      else if (typeof window.playMidi === 'function') window.playMidi([midi], true);
+      else if (window.p2kPhoneState && typeof p2kPlayMidi === 'function') p2kPlayMidi([midi]);
+    } catch (e) { /* 忽略 */ }
+    var status = $('phoneNow') || $('status');
+    if (status && typeof name === 'function') status.textContent = name(midi);
+  }
+
+  function releaseKey(el) {
+    if (!el) return;
+    el.classList.remove('p2k-key-down');
+    try {
+      if (typeof stopMidi === 'function') stopMidi();
+      else if (typeof window.stopPhoneAudio === 'function') window.stopPhoneAudio();
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /* 多点触控绑定：touchstart 一次拿到所有触点，逐个发声 */
+  function bindMultiTouch(root) {
+    if (!root || root.__p2kMultiTouch) return;
+    root.__p2kMultiTouch = true;
+
+    function keyAt(x, y) {
+      var el = document.elementFromPoint(x, y);
+      while (el && el !== root) {
+        if (el.classList && (el.classList.contains('phone-white') || el.classList.contains('phone-black') ||
+            el.classList.contains('phone-key') || el.dataset && (el.dataset.midi || el.dataset.note))) {
+          return el;
+        }
+        el = el.parentElement;
+      }
+      return null;
+    }
+
+    function onStart(event) {
+      var touches = event.changedTouches || [event];
+      for (var i = 0; i < touches.length; i++) {
+        var t = touches[i];
+        var key = keyAt(t.clientX, t.clientY);
+        if (!key) continue;
+        key.dataset.p2kTouchId = String(t.identifier);
+        touchState.active[String(t.identifier)] = key;
+        pressKey(key);
+      }
+      if (event.preventDefault) event.preventDefault();
+    }
+
+    function onEnd(event) {
+      var touches = event.changedTouches || [event];
+      for (var i = 0; i < touches.length; i++) {
+        var id = String(touches[i].identifier);
+        var key = touchState.active[id];
+        if (key) { releaseKey(key); delete key.dataset.p2kTouchId; delete touchState.active[id]; }
+      }
+    }
+
+    root.addEventListener('touchstart', onStart, { passive: false });
+    root.addEventListener('touchend', onEnd);
+    root.addEventListener('touchcancel', onEnd);
+    /* 鼠标（电脑上试） */
+    root.addEventListener('mousedown', function (event) {
+      var key = keyAt(event.clientX, event.clientY);
+      if (key) pressKey(key);
+    });
+    root.addEventListener('mouseup', function (event) {
+      var key = keyAt(event.clientX, event.clientY);
+      if (key) releaseKey(key);
+    });
+    root.addEventListener('mouseleave', function () {
+      Object.keys(touchState.active).forEach(function (id) { releaseKey(touchState.active[id]); delete touchState.active[id]; });
+    });
+  }
+
+  /* ------------------------------------------- 左上角菜单（默认收起，不挡琴键） */
+  var MENU_CSS = ''
+    + '.p2k-fab{position:fixed;left:10px;top:calc(env(safe-area-inset-top) + 10px);z-index:9998;'
+    + 'width:46px;height:46px;border-radius:50%;border:1px solid rgba(255,255,255,.35);'
+    + 'background:rgba(20,40,32,.72);color:#fff;font-size:20px;line-height:1;display:flex;'
+    + 'align-items:center;justify-content:center;backdrop-filter:blur(6px);cursor:pointer;'
+    + 'box-shadow:0 2px 10px rgba(0,0,0,.3);opacity:.9}'
+    + '.p2k-fab:active{transform:scale(.94)}'
+    + '.p2k-menu{position:fixed;left:10px;top:calc(env(safe-area-inset-top) + 64px);z-index:9999;'
+    + 'min-width:180px;padding:8px;border-radius:14px;background:rgba(18,32,26,.94);'
+    + 'border:1px solid rgba(255,255,255,.16);box-shadow:0 10px 30px rgba(0,0,0,.45);'
+    + 'backdrop-filter:blur(10px);display:none;flex-direction:column;gap:6px}'
+    + '.p2k-menu.open{display:flex}'
+    + '.p2k-menu button{all:unset;display:block;padding:11px 14px;border-radius:10px;color:#eaf4ee;'
+    + 'font-size:15px;cursor:pointer;white-space:nowrap}'
+    + '.p2k-menu button:active{background:rgba(255,255,255,.14)}'
+    + '.p2k-menu .p2k-menu-title{padding:4px 12px 8px;color:#8fb3a3;font-size:12px;letter-spacing:.04em}';
+
+  function ensureMenu() {
+    if (!isPhone()) return;
+    if (!document.getElementById('p2kFabStyle')) {
+      var style = document.createElement('style');
+      style.id = 'p2kFabStyle';
+      style.textContent = MENU_CSS;
+      document.head.appendChild(style);
+    }
+    if (document.getElementById('p2kFab')) return;
+
+    var fab = document.createElement('button');
+    fab.id = 'p2kFab';
+    fab.className = 'p2k-fab';
+    fab.type = 'button';
+    fab.setAttribute('aria-label', '菜单');
+    fab.textContent = '☰';
+
+    var menu = document.createElement('div');
+    menu.id = 'p2kMenu';
+    menu.className = 'p2k-menu';
+    menu.innerHTML = '<div class="p2k-menu-title">谱键 P2K</div>';
+
+    function add(label, handler, id) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      if (id) button.id = id;
+      button.addEventListener('click', function (event) {
+        event.stopPropagation();
+        handler();
+      });
+      menu.appendChild(button);
+      return button;
+    }
+
+    add('🎹 手机屏幕弹奏', function () {
+      close();
+      if (window.p2kPhonePlay) window.p2kPhonePlay.toggle();
+      else notify('手机弹奏模块未加载');
+    });
+    add('⏸ 暂停', function () { if (typeof phoneStop === 'function') phoneStop(); close(); });
+    add('⏹ 退出练习', function () {
+      close();
+      if (window.p2kPhonePlay && window.p2kPhonePlay.isOn()) window.p2kPhonePlay.toggle(false);
+      if (typeof exitPhonePractice === 'function') exitPhonePractice();
+      else if (typeof p2kRenderLibraryOffline === 'function') p2kRenderLibraryOffline();
+    });
+    add('🔁 重来一遍', function () {
+      close();
+      if (typeof phoneSelect === 'function') phoneSelect(0);
+      else if (typeof window.p2kPhoneSelect === 'function') window.p2kPhoneSelect(0);
+    });
+    add('⟳ 更新同步', function () {
+      close();
+      if (typeof p2kSyncLibraryNow === 'function') p2kSyncLibraryNow();
+    });
+    add('🎵 音乐工坊', function () {
+      close();
+      if (typeof p2kOpenStudio === 'function') p2kOpenStudio('account');
+    });
+
+    function close() { menu.classList.remove('open'); }
+    fab.addEventListener('click', function (event) {
+      event.stopPropagation();
+      menu.classList.toggle('open');
+    });
+    document.addEventListener('click', function (event) {
+      if (!menu.contains(event.target) && event.target !== fab) close();
+    });
+
+    document.body.appendChild(fab);
+    document.body.appendChild(menu);
+  }
+
+  /* 进入手机练习模式时启用菜单 + 多点触控 */
+  function activatePracticeMode() {
+    ensureMenu();
+    var keyboard = findKeyboard();
+    if (keyboard) bindMultiTouch(keyboard);
+  }
+
+  var observer = new MutationObserver(function () {
+    if (!isPhone()) return;
+    var practice = $('phonePractice');
+    if (practice && practice.hidden === false) activatePracticeMode();
+  });
+
+  /* --------------------------------------------------------------- 启动 */
+  function boot() {
+    if (!isPhone()) return;
+    try {
+      observer.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['hidden', 'class'] });
+    } catch (e) { /* 忽略 */ }
+
+    /* 登录后自动同步一次（不用手动点） */
+    if (token()) {
+      setTimeout(function () { autoSync('open'); }, 1500);
+    }
+    /* 观察登录成功：token 出现后自动同步 */
+    var watch = setInterval(function () {
+      if (token()) {
+        var last = readJson(LOG_KEY, null);
+        if (!last || Date.now() - (last.at || 0) > 60000) autoSync('login');
+        clearInterval(watch);
+      }
+    }, 2000);
+    setTimeout(function () { clearInterval(watch); }, 120000);
+
+    activatePracticeMode();
+  }
+
+  if (document.readyState === 'complete') setTimeout(boot, 900);
+  else window.addEventListener('load', function () { setTimeout(boot, 900); }, { once: true });
+
+  window.p2kAppPlus = {
+    version: '1.0.0',
+    autoSync: autoSync,
+    prefetchPdfs: prefetchPdfs,
+    cacheAudioIndex: cacheAudioIndex,
+    audioIndex: audioIndex,
+    searchLocal: searchLocal,
+    activatePracticeMode: activatePracticeMode,
+  };
+})();
+</script><script>/* ============================================================================
+   谱键 P2K · 手机屏幕弹奏（手机练习模式）
+   ----------------------------------------------------------------------------
+   在外面没带电钢琴时，直接用手机屏幕弹：
+     · 屏幕下方是一排琴键（默认 2 个八度，可加减）
+     · 多个手指同时按 → 同时出声（每个手指一个音）
+     · 退出 / 暂停 等功能收在左上角 ☰ 菜单里，默认不挡琴键
+     · 可打开/关闭「跟弹」：高亮当前该弹的音
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var SHARP = [1, 3, 6, 8, 10];
+  var NAME = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  var state = {
+    on: false,
+    octaves: 2,
+    baseMidi: 60,          /* 起始音：中央 C */
+    follow: true,
+    active: {},            /* touchId -> midi */
+  };
+
+  function $(id) { return document.getElementById(id); }
+  function isPhone() { return /[?&]mode=app/.test(location.search) || document.body.classList.contains('phone-mode'); }
+
+  function noteName(midi) {
+    return NAME[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
+  }
+
+  function isSharp(midi) {
+    return SHARP.indexOf(((midi % 12) + 12) % 12) >= 0;
+  }
+
+  /* ------------------------------------------------------------------ 样式 */
+  var CSS = ''
+    + '.p2k-play{position:fixed;left:0;right:0;bottom:0;z-index:50;'
+    + 'background:linear-gradient(180deg,rgba(18,32,26,.96),rgba(12,22,18,.99));'
+    + 'border-top:1px solid rgba(255,255,255,.14);'
+    + 'padding:6px 6px calc(env(safe-area-inset-bottom) + 6px);'
+    + 'box-shadow:0 -8px 26px rgba(0,0,0,.4);display:none;user-select:none}'
+    + '.p2k-play.on{display:block}'
+    + '.p2k-play-bar{display:flex;align-items:center;gap:6px;padding:2px 4px 7px;color:#cfe3d8;font-size:12.5px}'
+    + '.p2k-play-bar button{all:unset;min-width:34px;height:30px;padding:0 10px;border-radius:9px;'
+    + 'background:rgba(255,255,255,.1);color:#eaf4ee;text-align:center;cursor:pointer;font-size:13px}'
+    + '.p2k-play-bar button:active{background:rgba(255,255,255,.22)}'
+    + '.p2k-play-bar button.on{background:#1f8a63;color:#fff}'
+    + '.p2k-play-bar .p2k-play-spacer{flex:1}'
+    + '.p2k-play-keys{position:relative;height:30vh;min-height:130px;max-height:200px;'
+    + 'overflow-x:auto;overflow-y:hidden;white-space:nowrap;touch-action:pan-x;'
+    + '-webkit-overflow-scrolling:touch}'
+    + '.p2k-play-inner{position:relative;height:100%;white-space:nowrap}'
+    + '.p2k-pk{position:absolute;top:0;display:flex;align-items:flex-end;justify-content:center;'
+    + 'padding-bottom:6px;font-size:10.5px;font-weight:600;box-sizing:border-box;'
+    + 'border-radius:0 0 7px 7px;cursor:pointer}'
+    + '.p2k-pk.white{background:linear-gradient(180deg,#fbfdfb,#e6ece7);color:#3a4a43;'
+    + 'border:1px solid #a7b2aa;z-index:1}'
+    + '.p2k-pk.black{background:linear-gradient(180deg,#2c3a34,#141d19);color:#cfe3d8;'
+    + 'border:1px solid #0e1613;z-index:2}'
+    + '.p2k-pk.down{background:linear-gradient(180deg,#7fd2ab,#3aa877);color:#062017}'
+    + '.p2k-pk.target::after{content:"";position:absolute;inset:auto 12% 4px;height:4px;'
+    + 'border-radius:3px;background:#ffb703}'
+    + '.p2k-play-hint{position:fixed;left:10px;right:10px;bottom:calc(30vh + 50px);z-index:49;'
+    + 'padding:8px 12px;border-radius:11px;background:rgba(24,42,34,.95);color:#eaf4ee;'
+    + 'font-size:12.5px;line-height:1.6;display:none}'
+    + '.p2k-play-hint.on{display:block}'
+    /* 弹奏面板打开时，把左上角 ☰ 挪到面板上方，避免压住标题/按钮 */
+    + 'body.p2k-play-open #p2kFab{top:auto;bottom:calc(30vh + 58px);left:10px}'
+    + 'body.p2k-play-open #p2kMenu{top:auto;bottom:calc(30vh + 110px);left:10px;max-height:46vh;overflow:auto}'
+    + 'body.p2k-play-open{padding-bottom:34vh}';
+
+  function ensureStyle() {
+    if (document.getElementById('p2kPlayStyle')) return;
+    var style = document.createElement('style');
+    style.id = 'p2kPlayStyle';
+    style.textContent = CSS;
+    document.head.appendChild(style);
+  }
+
+  /* ------------------------------------------------------------ 键盘绘制 */
+  function whiteCount() {
+    var count = 0;
+    for (var i = 0; i < state.octaves * 12; i++) {
+      if (!isSharp(state.baseMidi + i)) count++;
+    }
+    return count;
+  }
+
+  function layout() {
+    var inner = document.getElementById('p2kPlayInner');
+    if (!inner) return;
+    var whites = whiteCount();
+    var unit = 100 / whites;
+    var totalWhites = 0;
+    inner.replaceChildren();
+
+    for (var i = 0; i < state.octaves * 12; i++) {
+      var midi = state.baseMidi + i;
+      var sharp = isSharp(midi);
+      var key = document.createElement('div');
+      key.className = 'p2k-pk ' + (sharp ? 'black' : 'white');
+      key.dataset.midi = String(midi);
+      if (sharp) {
+        /* 黑键骑在两个白键中间 */
+        key.style.width = (unit * 0.62) + '%';
+        key.style.height = '62%';
+        key.style.left = ((totalWhites - 0.31) * unit) + '%';
+        key.style.fontSize = '0';
+      } else {
+        key.style.width = unit + '%';
+        key.style.left = (totalWhites * unit) + '%';
+        totalWhites += 1;
+        key.textContent = ((midi % 12) === 0) ? noteName(midi) : '';
+      }
+      inner.appendChild(key);
+    }
+    inner.style.width = (whites * 46) + 'px';
+    inner.style.minWidth = (whites * 46) + 'px';
+    markTarget();
+  }
+
+  /* --------------------------------------------------------- 发声（多指） */
+  function press(midi, el) {
+    if (el) el.classList.add('down');
+    try {
+      if (typeof playMidi === 'function') playMidi([midi], 1.6);
+      else if (typeof window.playMidi === 'function') window.playMidi([midi], 1.6);
+    } catch (e) { /* 忽略 */ }
+    var now = $('phoneNowNow') || $('phoneNow');
+    if (now) now.textContent = noteName(midi);
+  }
+
+  function release(el) {
+    if (el) el.classList.remove('down');
+  }
+
+  function bindKeys() {
+    var host = document.getElementById('p2kPlayKeys');
+    if (!host || host.__bound) return;
+    host.__bound = true;
+
+    function keyAt(x, y) {
+      var el = document.elementFromPoint(x, y);
+      while (el && el !== host) {
+        if (el.classList && el.classList.contains('p2k-pk')) return el;
+        el = el.parentElement;
+      }
+      return null;
+    }
+
+    function down(id, x, y) {
+      var key = keyAt(x, y);
+      if (!key) return;
+      var midi = Number(key.dataset.midi);
+      if (isNaN(midi)) return;
+      state.active[id] = { midi: midi, el: key };
+      press(midi, key);
+    }
+
+    function up(id) {
+      var item = state.active[id];
+      if (!item) return;
+      release(item.el);
+      delete state.active[id];
+    }
+
+    host.addEventListener('touchstart', function (event) {
+      var touches = event.changedTouches || [];
+      for (var i = 0; i < touches.length; i++) {
+        down(String(touches[i].identifier), touches[i].clientX, touches[i].clientY);
+      }
+      event.preventDefault();
+    }, { passive: false });
+
+    host.addEventListener('touchmove', function (event) {
+      /* 手指滑到别的键：换音（像真的划过琴键） */
+      var touches = event.changedTouches || [];
+      for (var i = 0; i < touches.length; i++) {
+        var id = String(touches[i].identifier);
+        var key = keyAt(touches[i].clientX, touches[i].clientY);
+        if (!key) continue;
+        var midi = Number(key.dataset.midi);
+        var current = state.active[id];
+        if (!current || current.midi !== midi) {
+          if (current) release(current.el);
+          state.active[id] = { midi: midi, el: key };
+          press(midi, key);
+        }
+      }
+      event.preventDefault();
+    }, { passive: false });
+
+    function endAll(event) {
+      var touches = event.changedTouches || [];
+      for (var i = 0; i < touches.length; i++) up(String(touches[i].identifier));
+    }
+    host.addEventListener('touchend', endAll);
+    host.addEventListener('touchcancel', endAll);
+
+    /* 鼠标 / 单点（电脑上调试用；也支持按住拖动） */
+    var mouseDown = false;
+    host.addEventListener('mousedown', function (event) {
+      mouseDown = true;
+      down('mouse', event.clientX, event.clientY);
+      event.preventDefault();
+    });
+    host.addEventListener('mousemove', function (event) {
+      if (!mouseDown) return;
+      var key = keyAt(event.clientX, event.clientY);
+      if (!key) return;
+      var midi = Number(key.dataset.midi);
+      var current = state.active.mouse;
+      if (!current || current.midi !== midi) {
+        if (current) release(current.el);
+        state.active.mouse = { midi: midi, el: key };
+        press(midi, key);
+      }
+    });
+    window.addEventListener('mouseup', function () {
+      mouseDown = false;
+      up('mouse');
+    });
+  }
+
+  /* ------------------------------------------------------ 跟弹高亮当前音 */
+  function markTarget() {
+    if (!state.follow) return;
+    var inner = document.getElementById('p2kPlayInner');
+    if (!inner) return;
+    [].slice.call(inner.children).forEach(function (node) { node.classList.remove('target'); });
+    var current = null;
+    try {
+      if (typeof phoneScore === 'object' && phoneScore) {
+        var ev = phoneScore.events && phoneScore.events[phoneIndex];
+        if (ev && ev.notes && ev.notes.length) current = ev.notes.map(function (n) { return n.m; });
+      }
+    } catch (e) { /* 忽略 */ }
+    if (!current) return;
+    current.forEach(function (midi) {
+      var node = inner.querySelector('.p2k-pk[data-midi="' + midi + '"]');
+      if (node) node.classList.add('target');
+    });
+  }
+
+  /* ------------------------------------------------------------ 打开/关闭 */
+  function panel() {
+    var existing = document.getElementById('p2kPlay');
+    if (existing) return existing;
+
+    ensureStyle();
+    var wrap = document.createElement('div');
+    wrap.id = 'p2kPlay';
+    wrap.className = 'p2k-play';
+    wrap.innerHTML = ''
+      + '<div class="p2k-play-bar">'
+      + '  <button type="button" id="p2kPlayMinus" aria-label="降八度">−8</button>'
+      + '  <button type="button" id="p2kPlayPlus" aria-label="升八度">+8</button>'
+      + '  <button type="button" id="p2kPlayFollow" class="on">跟弹</button>'
+      + '  <span class="p2k-play-spacer"></span>'
+      + '  <button type="button" id="p2kPlayClose">收起</button>'
+      + '</div>'
+      + '<div class="p2k-play-keys" id="p2kPlayKeys"><div class="p2k-play-inner" id="p2kPlayInner"></div></div>';
+    document.body.appendChild(wrap);
+
+    var hint = document.createElement('div');
+    hint.id = 'p2kPlayHint';
+    hint.className = 'p2k-play-hint';
+    hint.textContent = '手指按住琴键就能发声；多个手指同时按可以同时弹多个音。左右滑动可以移调。左上角 ☰ 是退出/暂停菜单。';
+    document.body.appendChild(hint);
+
+    wrap.querySelector('#p2kPlayPlus').addEventListener('click', function () {
+      state.baseMidi = Math.min(96, state.baseMidi + 12);
+      if (state.baseMidi + state.octaves * 12 > 108) state.baseMidi = 108 - state.octaves * 12;
+      layout();
+    });
+    wrap.querySelector('#p2kPlayMinus').addEventListener('click', function () {
+      state.baseMidi = Math.max(21, state.baseMidi - 12);
+      layout();
+    });
+    wrap.querySelector('#p2kPlayFollow').addEventListener('click', function (event) {
+      state.follow = !state.follow;
+      event.target.classList.toggle('on', state.follow);
+      if (state.follow) markTarget();
+      else {
+        var inner = document.getElementById('p2kPlayInner');
+        if (inner) [].slice.call(inner.children).forEach(function (n) { n.classList.remove('target'); });
+      }
+    });
+    wrap.querySelector('#p2kPlayClose').addEventListener('click', function () { toggle(false); });
+
+    bindKeys();
+    return wrap;
+  }
+
+  function toggle(on) {
+    state.on = (on === undefined) ? !state.on : !!on;
+    var wrap = panel();
+    wrap.classList.toggle('on', state.on);
+    document.body.classList.toggle('p2k-play-open', state.on);
+    var hint = document.getElementById('p2kPlayHint');
+    if (hint) hint.classList.toggle('on', state.on);
+    if (state.on) {
+      layout();
+      try { if (typeof playMidi === 'function') playMidi([]); } catch (e) { /* 预热音频 */ }
+    } else {
+      Object.keys(state.active).forEach(function (id) {
+        release(state.active[id].el);
+        delete state.active[id];
+      });
+    }
+    return state.on;
+  }
+
+  /* 自动高亮：练习页在跑时定时更新 */
+  setInterval(function () {
+    if (state.on && state.follow) markTarget();
+  }, 400);
+
+  window.p2kPhonePlay = {
+    version: '1.0.0',
+    toggle: toggle,
+    isOn: function () { return state.on; },
+    setBase: function (midi) { state.baseMidi = Math.max(21, Math.min(96, midi)); if (state.on) layout(); },
+    setOctaves: function (n) { state.octaves = Math.max(1, Math.min(5, n)); if (state.on) layout(); },
+  };
+})();
 </script><script>
 /* P2K_STATIC_REPO：没有后端时（例如 GitHub Pages）改读静态谱库 ./scores/index.json。
    有后端时接口先返回，这里什么都不做。 */
