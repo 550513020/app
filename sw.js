@@ -3,7 +3,7 @@
    1) 页面导航「先问网络」——服务端更新了页面，刷新就一定拿到新版，不会卡在旧界面。
    2) 断网时回落到缓存——离线也要能打开页面（断网、服务重启都不能白屏）。
    其它静态资源走后缓存；接口（/api/）完全不拦。 */
-const CACHE = 'p2k-static-v20261011110851';
+const CACHE = 'p2k-static-20261011202609';
 const SHELL = './index.html';
 
 self.addEventListener('install', (event) => {
@@ -32,27 +32,31 @@ self.addEventListener('activate', (event) => {
 });
 
 async function networkFirst(request) {
-  try {
-    const fresh = await fetch(request.url, { cache: 'no-store', credentials: 'same-origin' });
-    if (fresh && fresh.ok) {
-      const cache = await caches.open(CACHE);
-      cache.put(SHELL, fresh.clone());
-    }
-    return fresh;
-  } catch (error) {
-    // 断网：用缓存的外壳页面兜底，避免白屏
-    const cache = await caches.open(CACHE);
-    const cached = (await cache.match(SHELL)) || (await caches.match('./'));
-    if (cached) return cached;
-    return new Response(
-      '<!doctype html><meta charset="utf-8"><title>谱键 P2K</title>'
-      + '<body style="font-family:system-ui;padding:28px;background:#f6f8f3;color:#20352f">'
-      + '<h2>离线中</h2><p>这台设备还没缓存到页面。请先联网打开一次，之后离线也能用。</p>'
-      + '<p style="color:#6b7c75">如果在手机 App 里看到这页：App 内置的离线页面本来就在本机，'
-      + '从 App 图标进入即可离线练习。</p></body>',
-      { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
-    );
-  }
+  /* stale-while-revalidate：
+     先给缓存（打开即显示，不再等整页下载），同时后台拉最新版写回缓存。
+     只有第一次打开（没有缓存）才会等待网络。 */
+  const cache = await caches.open(CACHE);
+  const cached = (await cache.match(SHELL)) || (await caches.match('./'));
+
+  const refresh = fetch(request.url, { cache: 'no-store', credentials: 'same-origin' })
+    .then((fresh) => {
+      if (fresh && fresh.ok) cache.put(SHELL, fresh.clone());
+      return fresh;
+    })
+    .catch(() => null);
+
+  if (cached) return cached;            /* 有缓存：立刻返回，后台更新 */
+
+  const fresh = await refresh;
+  if (fresh && fresh.ok) return fresh;
+  return new Response(
+    '<!doctype html><meta charset="utf-8"><title>谱键 P2K</title>'
+    + '<body style="font-family:system-ui;padding:28px;background:#f6f8f3;color:#20352f">'
+    + '<h2>离线中</h2><p>这台设备还没缓存到页面。请先联网打开一次，之后离线也能用。</p>'
+    + '<p style="color:#6b7c75">如果在手机 App 里看到这页：App 内置的离线页面本来就在本机，'
+    + '从 App 图标进入即可离线练习。</p></body>',
+    { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+  );
 }
 
 self.addEventListener('fetch', (event) => {
