@@ -1807,7 +1807,7 @@ body.phone-piano-mode .phone-score-line.empty{display:none!important}
 <div class="row"><label class="upload">导入 PDF 曲谱<input id="file" class="files" type="file" accept="application/pdf,.pdf"></label><button id="recognize" class="primary" disabled>AI 自动识谱</button><button id="edit">手动校正</button><span class="p2k-omr-preload"><label class="p2k-omr-toggle" title="打开网页时自动把本机识谱引擎预热好"><input type="checkbox" id="p2kOmrPreload"> 识谱预加载</label><button type="button" id="p2kOmrChip" class="p2k-omr-chip" data-state="idle">识谱引擎：待预热</button><button type="button" id="p2kOpenStudioTop" class="p2k-toolbar-studio">🎵 音乐工坊</button></span><button id="export">导出标注</button><label class="upload">导入标注<input id="import" class="files" type="file" accept="application/json,.json"></label></div>
 
 
-<div class="p2k-cloud-tools"><button id="accountBtn">用户名登录 / 同步</button><button id="libraryBtn">琴谱仓库</button><button id="saveLocalBtn" disabled>保存本机存档</button><button id="saveCloudBtn" class="primary" disabled>同步到云端</button><a href="?mode=app" class="phone-link">手机练习版 ↗</a><a class="phone-link" href="./downloads/P2K-debug.apk?v=28">下载 Android APK ↓</a><a class="phone-link" href="./downloads/P2K-sample-score.pdf">示例曲谱 PDF</a><span id="cloudState" class="cloud-state">登录后识谱结果会自动同步到手机</span></div><p class="warning tiny">安卓安装：下载后从浏览器下载列表或“文件管理 → 下载”打开 APK；若系统拦截，按提示仅允许当前浏览器/文件管理器安装。安装后需手机和电脑连接同一 Wi‑Fi，并保持电脑上的谱键服务运行。</p>
+<div class="p2k-cloud-tools"><button id="accountBtn">用户名登录 / 同步</button><button id="libraryBtn">琴谱仓库</button><button id="saveLocalBtn" disabled>保存本机存档</button><button id="saveCloudBtn" class="primary" disabled>同步到云端</button><a href="?mode=app" class="phone-link">手机练习版 ↗</a><a class="phone-link" href="./downloads/P2K-debug.apk?v=32" download="P2K-2.18.0.apk">下载 Android APK ↓</a><a class="phone-link" href="./downloads/P2K-sample-score.pdf">示例曲谱 PDF</a><span id="cloudState" class="cloud-state">登录后识谱结果会自动同步到手机</span></div><p class="warning tiny">安卓安装：下载后从浏览器下载列表或“文件管理 → 下载”打开 APK；若系统拦截，按提示仅允许当前浏览器/文件管理器安装。安装后需手机和电脑连接同一 Wi‑Fi，并保持电脑上的谱键服务运行。</p>
 
 
 <p class="warning tiny" id="privacy">琴谱在本机打开。AI 识谱需要连接本机的识谱服务；校正音符和指法后可保存练习标注。</p>
@@ -16823,6 +16823,112 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   if(document.readyState==='complete'){ setTimeout(boot,600); }
   else { window.addEventListener('load',function(){ setTimeout(boot,600); },{once:true}); }
+})();
+</script><script>
+/* P2K_APK_DOWNLOAD：让「下载 Android APK」在各浏览器/WebView 里都能用。
+   点击 → 取文件 → Blob 强制下载；失败则给出可复制的直链与安装说明。 */
+(function(){
+  'use strict';
+  var APK_HREF='./downloads/P2K-debug.apk';
+  var APK_NAME='P2K-2.18.0.apk';
+
+  function apkLink(){
+    return [].slice.call(document.querySelectorAll('a')).filter(function(a){
+      return /APK/i.test(a.textContent||'')||/\.apk/i.test(a.getAttribute('href')||'');
+    })[0]||null;
+  }
+
+  function notify(text,kind){
+    var box=document.getElementById('p2kApkNote');
+    if(!box){
+      box=document.createElement('div');
+      box.id='p2kApkNote';
+      box.style.cssText='margin:10px 0;padding:11px 14px;border-radius:10px;font-size:13.5px;line-height:1.7;'
+        +'border:1px solid #cfe3d8;background:#eef7f1;color:#1c3b2c;max-width:640px';
+      var link=apkLink();
+      var host=link&&link.parentNode?link.parentNode:document.querySelector('.toolbar')||document.body;
+      if(link&&link.nextSibling)host.insertBefore(box,link.nextSibling);
+      else host.appendChild(box);
+    }
+    box.style.borderColor=kind==='warn'?'#ffd166':'#cfe3d8';
+    box.style.background=kind==='warn'?'#fff9e6':'#eef7f1';
+    box.innerHTML=text;
+    return box;
+  }
+
+  function directPanel(reason){
+    var url=new URL(APK_HREF+'?v=32',location.href).href;
+    notify('<b>'+(reason||'浏览器没有自动开始下载')+'</b><br>'
+      +'请把下面这个地址<b>复制到手机浏览器</b>打开，就会开始下载：<br>'
+      +'<input id="p2kApkUrl" readonly value="'+url+'" style="width:100%;margin:6px 0;padding:7px 9px;border:1px solid #cfe3d8;border-radius:7px;font-size:12.5px;background:#fff">'
+      +'<button type="button" id="p2kApkCopy" style="padding:6px 14px;border:0;border-radius:8px;background:#1f8a63;color:#fff;font-weight:700;cursor:pointer">复制地址</button>'
+      +' <a href="'+url+'" download style="margin-left:8px;color:#17603c;font-weight:700">或直接点这里再试一次</a>'
+      +'<br><span style="color:#5b7568">安装：下载完成后在「文件管理 → 下载」里点开 APK；'
+      +'若系统拦截，按提示允许「当前浏览器/文件管理器」安装即可。</span>','warn');
+    var copy=document.getElementById('p2kApkCopy');
+    if(copy)copy.onclick=function(){
+      var input=document.getElementById('p2kApkUrl');
+      if(!input)return;
+      input.select();input.setSelectionRange(0,99999);
+      var done=false;
+      try{done=document.execCommand('copy');}catch(e){}
+      if(!done&&navigator.clipboard){navigator.clipboard.writeText(input.value);done=true;}
+      copy.textContent=done?'已复制 ✓':'请手动复制';
+      setTimeout(function(){copy.textContent='复制地址';},2500);
+    };
+  }
+
+  function download(){
+    var link=apkLink();
+    if(!link)return;
+    var url=new URL(APK_HREF+'?v='+Date.now(),location.href).href;
+    notify('正在准备安装包 …','ok');
+    fetch(url,{cache:'no-store'}).then(function(res){
+      if(!res.ok)throw new Error('HTTP '+res.status);
+      var total=Number(res.headers.get('content-length')||0);
+      if(!res.body||!window.ReadableStream){
+        return res.blob();
+      }
+      /* 带进度地读 */
+      var reader=res.body.getReader(),chunks=[],got=0;
+      return (function pump(){
+        return reader.read().then(function(r){
+          if(r.done)return new Blob(chunks,{type:'application/vnd.android.package-archive'});
+          chunks.push(r.value);got+=r.value.length;
+          if(total)notify('正在下载安装包 … '+Math.round(got*100/total)+'%','ok');
+          return pump();
+        });
+      })();
+    }).then(function(blob){
+      var objectUrl=URL.createObjectURL(blob);
+      var a=document.createElement('a');
+      a.href=objectUrl;a.download=APK_NAME;document.body.appendChild(a);a.click();
+      setTimeout(function(){URL.revokeObjectURL(objectUrl);a.remove();},60000);
+      notify('<b>已开始下载：'+APK_NAME+'</b>（'+(blob.size/1048576).toFixed(2)+' MB）<br>'
+        +'下载完成后在手机「文件管理 → 下载」里点开安装。'
+        +'<br><span style="color:#5b7568">没反应？</span> '
+        +'<a href="#" id="p2kApkFallback" style="color:#17603c;font-weight:700">点这里拿直链</a>','ok');
+      var fb=document.getElementById('p2kApkFallback');
+      if(fb)fb.onclick=function(e){e.preventDefault();directPanel('已给出直链');return false;};
+    }).catch(function(error){
+      directPanel('浏览器阻止了自动下载（'+((error&&error.message)||'未知原因')+'）');
+    });
+  }
+
+  function boot(){
+    var link=apkLink();
+    if(!link){setTimeout(boot,500);return;}
+    if(link.__p2kApkBound)return;
+    link.__p2kApkBound=true;
+    link.setAttribute('download',APK_NAME);       /* 兜底 2：原生下载属性 */
+    link.addEventListener('click',function(event){
+      event.preventDefault();
+      download();
+    });
+  }
+
+  if(document.readyState==='complete')setTimeout(boot,700);
+  else window.addEventListener('load',function(){setTimeout(boot,700);},{once:true});
 })();
 </script><script>
 /* P2K_STATIC_REPO：没有后端时（例如 GitHub Pages）改读静态谱库 ./scores/index.json。
