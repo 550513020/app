@@ -1823,15 +1823,15 @@ body[data-p2k-scope="local"] [data-p2k-hide-local] {
   display: none !important;
 }
 
-/* ── ② 公网端（GitHub Pages）：不出现识谱引擎相关，只留仓库+账号 ── */
-/* 隐藏识谱按钮、识谱状态标签、示例曲谱载入、演示教程、手机练习、音频工坊 */
+/* ── ② 公网端（GitHub Pages）：工坊里只留「找谱」，不出现识谱引擎 ── */
+/* 隐藏识谱按钮/状态、示例曲谱、演示教程、音频导入、音乐搜索、播放、手机练习 */
 body[data-p2k-scope="web"] #recognize,
 body[data-p2k-scope="web"] #p2kOmrChip,
+body[data-p2k-scope="web"] #p2kOmrPreload,
 body[data-p2k-scope="web"] #p2kLoadSample,
 body[data-p2k-scope="web"] #p2kTourBtn,
 body[data-p2k-scope="web"] #p2kImportAudio,
 body[data-p2k-scope="web"] #p2kImportAudioInput,
-body[data-p2k-scope="web"] #p2kAudioTab,
 body[data-p2k-scope="web"] #p2kMusicSearch,
 body[data-p2k-scope="web"] #p2kSearchBtn,
 body[data-p2k-scope="web"] #p2kPlayBtn,
@@ -1839,11 +1839,18 @@ body[data-p2k-scope="web"] #p2kPhonePlayBtn,
 body[data-p2k-scope="web"] #phoneModePractice,
 body[data-p2k-scope="web"] #phoneModePick,
 body[data-p2k-scope="web"] #p2kFxPanel,
+body[data-p2k-scope="web"] #p2kImportLog,
+body[data-p2k-scope="web"] #p2kImportedList,
 body[data-p2k-scope="web"] [data-p2k-hide-web] {
   display: none !important;
 }
 
-/* 公网端的识谱指引卡片也收起来（改用按钮链接更简洁） */
+/* 公网端：工坊里跟音频有关的标题/区域也收起来，只留「找谱」 */
+body[data-p2k-scope="web"] #p2kStudioBody h4:not([data-p2k-keep]) {
+  /* 保守起见不动标题，只隐藏明确的音频区块（上面已列 id） */
+}
+
+/* 公网端的识谱指引卡片收起来（改用按钮旁的链接更简洁） */
 body[data-p2k-scope="web"] #p2kOmrLocalGuide {
   display: none !important;
 }
@@ -18619,19 +18626,28 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
   function apply() {
     document.body.setAttribute('data-p2k-scope', scope);
 
-    /* 公网端：在识谱按钮位置给一个「去本机识谱」的链接 */
+    /* 公网端：工坊里只保留「找谱」（仓库搜索/查看），
+       音频导入、音乐搜索、音频下载这些都收起来。 */
     if (scope === 'web') {
       var local = 'http://127.0.0.1:8766';
-      var anchor = document.getElementById('recognize');
+
+      /* 把「音乐工坊」按钮改名，让用户一眼知道这里是找谱 */
+      var studioBtn = document.getElementById('p2kOpenStudioTop');
+      if (studioBtn) studioBtn.textContent = '📚 找谱 / 仓库';
+
+      /* 给按钮后面补一个直达本机识谱的链接 */
+      var anchor = document.getElementById('recognize')
+        || document.getElementById('p2kOpenStudioTop')
+        || document.getElementById('accountBtn');
       if (anchor && anchor.parentNode && !document.getElementById('p2kGotoLocal')) {
         var link = document.createElement('a');
         link.id = 'p2kGotoLocal';
         link.href = local;
         link.target = '_blank';
         link.rel = 'noopener';
-        link.textContent = '🎹 到本机识谱（点这里打开）';
-        link.style.cssText = 'margin-left:10px;padding:9px 15px;border-radius:9px;'
-          + 'background:#1f8a63;color:#fff;font-weight:700;font-size:13.5px;'
+        link.textContent = '🎹 到本机识谱';
+        link.style.cssText = 'margin-left:10px;padding:8px 14px;border-radius:9px;'
+          + 'background:#1f8a63;color:#fff;font-weight:700;font-size:13px;'
           + 'text-decoration:none;display:inline-block;vertical-align:middle';
         anchor.parentNode.insertBefore(link, anchor.nextSibling);
       }
@@ -18655,7 +18671,6 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     isApp: function () { return scope === 'app'; },
   };
 })();
-
 </script></body></html>
 
 
