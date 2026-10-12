@@ -1798,7 +1798,62 @@ body.phone-piano-mode .phone-score-line.empty{display:none!important}
 })();
 
 
-</script><style id="p2k-omr-chip-css">.p2k-omr-preload{display:inline-flex;align-items:center;gap:8px;margin-left:4px}.p2k-omr-toggle{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:#3c4a45;white-space:nowrap}.p2k-omr-chip{min-height:32px;padding:4px 10px;border-radius:9px;border:1px solid #cfe0d6;background:#eef6f1;color:#216653;font-size:12.5px;white-space:nowrap}.p2k-omr-chip[data-state="ok"]{background:#1f8a63;color:#fff;border-color:#1f8a63}.p2k-omr-chip[data-state="warm"]{background:#fff3c4;color:#8a5a00;border-color:#ffd166}.p2k-omr-chip[data-state="warn"]{background:#ffe9e6;color:#a3352b;border-color:#ffb3a8}</style></head><body><main class="wrap"><header><div class="brand"><div class="logo" aria-hidden="true"><i></i><i></i><i></i></div><div><h1>谱键 P2K</h1><div class="tiny muted">给钢琴初学者的读谱助手</div></div></div><span class="pill">PDF 本机处理 · 手机网页适配</span></header>
+</script><style id="p2k-omr-chip-css">.p2k-omr-preload{display:inline-flex;align-items:center;gap:8px;margin-left:4px}.p2k-omr-toggle{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:#3c4a45;white-space:nowrap}.p2k-omr-chip{min-height:32px;padding:4px 10px;border-radius:9px;border:1px solid #cfe0d6;background:#eef6f1;color:#216653;font-size:12.5px;white-space:nowrap}.p2k-omr-chip[data-state="ok"]{background:#1f8a63;color:#fff;border-color:#1f8a63}.p2k-omr-chip[data-state="warm"]{background:#fff3c4;color:#8a5a00;border-color:#ffd166}.p2k-omr-chip[data-state="warn"]{background:#ffe9e6;color:#a3352b;border-color:#ffb3a8}</style><style>/* P2K-SCOPE-CSS */
+/* 三端裁剪样式：按 body[data-p2k-scope] 隐藏不属于该端的东西。
+   放在独立 style 里，随时可以整段删除以恢复原样。 */
+
+/* ── ① 本机端（127.0.0.1 / 192.168.x）：只留 识谱 / 账号 / 仓库保存查看 ── */
+/* 隐藏：音频库、音乐搜索、音频下载、音频转谱、手机弹奏等"工坊"入口 */
+body[data-p2k-scope="local"] #p2kImportAudio,
+body[data-p2k-scope="local"] #p2kImportAudioInput,
+body[data-p2k-scope="local"] #p2kAudioTab,
+body[data-p2k-scope="local"] #p2kMusicSearch,
+body[data-p2k-scope="local"] #p2kSearchBtn,
+body[data-p2k-scope="local"] #p2kImportLog,
+body[data-p2k-scope="local"] #p2kImportedList,
+body[data-p2k-scope="local"] #p2kPlayBtn,
+body[data-p2k-scope="local"] #p2kPhonePlayBtn,
+body[data-p2k-scope="local"] #p2kConnectUsb,
+body[data-p2k-scope="local"] #phoneModePractice,
+body[data-p2k-scope="local"] #phoneModePick,
+body[data-p2k-scope="local"] #phonePreviewMode,
+body[data-p2k-scope="local"] #phoneFavEntry,
+body[data-p2k-scope="local"] #p2kFxPanel,
+body[data-p2k-scope="local"] [data-p2k-hide-local] {
+  display: none !important;
+}
+
+/* ── ② 公网端（GitHub Pages）：不出现识谱引擎相关，只留仓库+账号 ── */
+/* 隐藏识谱按钮、识谱状态标签、示例曲谱载入、演示教程、手机练习、音频工坊 */
+body[data-p2k-scope="web"] #recognize,
+body[data-p2k-scope="web"] #p2kOmrChip,
+body[data-p2k-scope="web"] #p2kLoadSample,
+body[data-p2k-scope="web"] #p2kTourBtn,
+body[data-p2k-scope="web"] #p2kImportAudio,
+body[data-p2k-scope="web"] #p2kImportAudioInput,
+body[data-p2k-scope="web"] #p2kAudioTab,
+body[data-p2k-scope="web"] #p2kMusicSearch,
+body[data-p2k-scope="web"] #p2kSearchBtn,
+body[data-p2k-scope="web"] #p2kPlayBtn,
+body[data-p2k-scope="web"] #p2kPhonePlayBtn,
+body[data-p2k-scope="web"] #phoneModePractice,
+body[data-p2k-scope="web"] #phoneModePick,
+body[data-p2k-scope="web"] #p2kFxPanel,
+body[data-p2k-scope="web"] [data-p2k-hide-web] {
+  display: none !important;
+}
+
+/* 公网端的识谱指引卡片也收起来（改用按钮链接更简洁） */
+body[data-p2k-scope="web"] #p2kOmrLocalGuide {
+  display: none !important;
+}
+
+/* ── ③ 手机 App：不裁剪，全部保留 ── */
+body[data-p2k-scope="app"] [data-p2k-hide-app] {
+  display: none !important;
+}
+
+/* /P2K-SCOPE-CSS */</style></head><body><main class="wrap"><header><div class="brand"><div class="logo" aria-hidden="true"><i></i><i></i><i></i></div><div><h1>谱键 P2K</h1><div class="tiny muted">给钢琴初学者的读谱助手</div></div></div><span class="pill">PDF 本机处理 · 手机网页适配</span></header>
 
 
 <section class="intro"><h2>看清每个音，找到每个键。</h2><p class="muted">导入五线谱，识别音符、标出琴键，再把难段循环练熟。</p></section>
@@ -18524,6 +18579,83 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     steps: STEPS.length,
   };
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 三端作用域（按打开方式自动裁剪界面）
+   ----------------------------------------------------------------------------
+   三端定位：
+     ① local  电脑浏览器打开 127.0.0.1:8766 → **只保留：识谱 / 账号 / 保存仓库+查看**
+     ② web    公网 GitHub Pages            → **仓库搜索查看 / 账号同步**（不出现识谱引擎）
+                                              但要给一个可点击的「到本机识谱」链接
+     ③ app    手机 App / 手机浏览器         → **尽量全都有**（本模块不动它）
+
+   做法：给 body 打一个 data-p2k-scope 标记，再用 CSS 隐藏不属于该端的元素。
+        不改动原有逻辑，最安全、可随时撤回。
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  function hostIsPrivate() {
+    var h = location.hostname;
+    return /^(127\.0\.0\.1|localhost|\[::1\]|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
+  }
+
+  function isPhoneShell() {
+    if (/[?&]mode=app/.test(location.search)) return true;
+    if (document.body && document.body.classList.contains('phone-natural')) return true;
+    /* 手机 App 的 WebView：屏幕小 + 触屏 */
+    return window.matchMedia && window.matchMedia('(max-width: 820px)').matches
+      && ('ontouchstart' in window);
+  }
+
+  function pickScope() {
+    if (isPhoneShell()) return 'app';
+    if (hostIsPrivate() || location.protocol === 'file:') return 'local';
+    return 'web';
+  }
+
+  var scope = pickScope();
+
+  function apply() {
+    document.body.setAttribute('data-p2k-scope', scope);
+
+    /* 公网端：在识谱按钮位置给一个「去本机识谱」的链接 */
+    if (scope === 'web') {
+      var local = 'http://127.0.0.1:8766';
+      var anchor = document.getElementById('recognize');
+      if (anchor && anchor.parentNode && !document.getElementById('p2kGotoLocal')) {
+        var link = document.createElement('a');
+        link.id = 'p2kGotoLocal';
+        link.href = local;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = '🎹 到本机识谱（点这里打开）';
+        link.style.cssText = 'margin-left:10px;padding:9px 15px;border-radius:9px;'
+          + 'background:#1f8a63;color:#fff;font-weight:700;font-size:13.5px;'
+          + 'text-decoration:none;display:inline-block;vertical-align:middle';
+        anchor.parentNode.insertBefore(link, anchor.nextSibling);
+      }
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', apply, { once: true });
+  } else {
+    apply();
+  }
+
+  /* 手机端界面的类名由页面自己加，可能晚于本模块，稍后补一次 */
+  setTimeout(apply, 1200);
+
+  window.p2kScope = {
+    version: '1.0.0',
+    current: function () { return scope; },
+    isLocal: function () { return scope === 'local'; },
+    isWeb: function () { return scope === 'web'; },
+    isApp: function () { return scope === 'app'; },
+  };
+})();
+
 </script></body></html>
 
 
