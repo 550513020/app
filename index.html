@@ -17034,6 +17034,26 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
   }
 
+/* -------------------------------------------------- 载入示例曲谱（手机可用）
+     电脑端有 #p2kLoadSample 按钮，手机看不到，所以这里自己实现一份：
+     下载示例 PDF → 交给页面已有的 p2kOpenSheetBytes 打开。 */
+  async function loadSampleSheet() {
+    notify('正在载入示例曲谱…');
+    try {
+      const res = await fetch('./downloads/P2K-sample-score.pdf?cb=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (typeof window.p2kOpenSheetBytes === 'function') {
+        window.p2kOpenSheetBytes(bytes, 'P2K-示例曲谱.pdf');
+        notify('示例曲谱已载入，点「AI 识谱」试试', 'ok');
+      } else {
+        notify('当前页面无法自动导入，请手动导入 PDF');
+      }
+    } catch (error) {
+      notify('示例曲谱下载失败：' + (error && error.message ? error.message : error));
+    }
+  }
+
   /* ---------------------------------------------------------------- 自动同步 */
   var syncing = false;
 
@@ -17343,6 +17363,10 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     add('📖 演示教程', function () {
       close();
       if (window.p2kTour && typeof window.p2kTour.start === 'function') window.p2kTour.start();
+    });
+    add('▶ 载入示例曲谱', function () {
+      close();
+      loadSampleSheet();
     });
     add('⏸ 暂停', function () { if (typeof phoneStop === 'function') phoneStop(); close(); });
     add('⏹ 退出练习', function () {
@@ -17951,7 +17975,8 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     if(patch() || tries > 40) clearInterval(timer);
   }, 250);
 })();
-</script><script>/* ============================================================================
+</script><script>
+/* ============================================================================
    谱键 P2K · 把 PDF 存进仓库
    ----------------------------------------------------------------------------
    用户导入的 PDF / 谱面图片，除了存在本机，还可以"存进仓库"：
@@ -18213,7 +18238,8 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     localHint: LOCAL_HINT,
   };
 })();
-</script><script>/* ============================================================================
+</script><script>
+/* ============================================================================
    谱键 P2K · 示例曲谱一键导入 + 演示引导
    ----------------------------------------------------------------------------
    问题：原来「示例曲谱 PDF」只是一个下载链接 —— 点了只会下载文件，
@@ -18335,15 +18361,43 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     return true;
   }
 
+  /* 手机端：加一个独立浮动按钮（手机看不到电脑工具栏上的按钮） */
+  function attachPhoneFab() {
+    if ($('p2kPhoneSampleFab')) return true;
+    if (!/^(app|local)$/.test(document.body.getAttribute('data-p2k-scope') || '')) return false;
+    var isSmall = window.matchMedia && window.matchMedia('(max-width: 820px)').matches;
+    var isMobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+    if (!isSmall && !isMobile) return false;
+
+    var fab = document.createElement('button');
+    fab.type = 'button';
+    fab.id = 'p2kPhoneSampleFab';
+    fab.textContent = '示例';
+    fab.title = '载入示例曲谱';
+    fab.style.cssText = 'position:fixed;z-index:99980;right:10px;bottom:96px;'
+      + 'padding:9px 13px;border:0;border-radius:20px;background:rgba(31,138,99,.94);'
+      + 'color:#fff;font-size:13px;font-weight:700;cursor:pointer;'
+      + 'box-shadow:0 4px 14px rgba(0,0,0,.28)';
+    fab.addEventListener('click', function (event) {
+      event.stopPropagation();
+      loadSample();
+    });
+    document.body.appendChild(fab);
+    return true;
+  }
+
   var tries = 0;
   var timer = setInterval(function () {
     tries += 1;
-    if (attach() || tries > 80) clearInterval(timer);
+    var ok = attach();
+    attachPhoneFab();
+    if ((ok && tries > 4) || tries > 80) clearInterval(timer);
   }, 400);
 
   window.p2kDemo = { version: '1.0.0', loadSample: loadSample, apiBase: apiBase };
 })();
-</script><script>/* ============================================================================
+</script><script>
+/* ============================================================================
    谱键 P2K · 图文演示教程
    ----------------------------------------------------------------------------
    目标：让第一次用的人「照着点一遍」就学会整个流程：
