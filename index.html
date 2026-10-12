@@ -2215,7 +2215,7 @@ async function loadFile(file){ensureScoreNodes();view={x:0,y:0,w:1,h:1};stop();s
 let recognitionSucceeded=false;
 
 
-async function recognize(){recognitionSucceeded=false;if(!pdfBytes)return;const apiBase=(function(){try{if(window.p2kTunnel&&typeof window.p2kTunnel.base==='function'){var t=window.p2kTunnel.base();if(t)return t.replace(/\/+$/,'')+'/api';}}catch(e){}try{if(typeof P2K_API==='string'&&P2K_API&&P2K_API!=='/api')return P2K_API}catch(e){}if(location.protocol!=='file:'&&location.origin&&location.origin.indexOf('http')===0)return location.origin+'/api';return '/api';})();const endpoint=apiBase+'/recognize',health=apiBase+'/omr-health';$('recognize').disabled=true;try{status('正在检查本机识谱服务…');let check;try{if(typeof p2kServiceEnsure==='function'){status('正在启动本机识谱服务…');await p2kServiceEnsure('识谱');}const omrStart=health.replace(/\/omr-health$/,'/omr-start');try{await fetch(omrStart,{cache:'no-store',signal:AbortSignal.timeout(60000)})}catch(error){lastError=error}const startedAt=Date.now();let lastError=null;check=null;while(Date.now()-startedAt<90000){try{const r=await fetch(health,{cache:'no-store'});if(r.ok){const payload=await r.json();if(payload.ok&&(payload.running||payload.installed)){check=payload;break;}lastError=new Error(payload.detail||'识谱引擎正在启动…');}else lastError=new Error('HTTP '+r.status)}catch(error){lastError=error}if(!check)await new Promise(done=>setTimeout(done,1200));}if(!check)throw Error((lastError&&lastError.message)||'识谱引擎还没就绪');}catch(error){throw Error('识谱引擎没能在 45 秒内就绪：'+((error&&error.message)||'未知原因')+'。请确认电脑上的谱键服务已启动，再点一次「AI 自动识谱」。')}if(!check.ok||!check.installed)throw Error(check.detail||'识谱引擎未安装或未就绪。请启动本机 P2K 服务后重试。');const data=new FormData();for(let p=1;p<=pdf.numPages;p++){status('正在为本机识谱准备第 '+p+' / '+pdf.numPages+' 页…');const page=await pdf.getPage(p),viewport=page.getViewport({scale:2}),canvas=document.createElement('canvas');canvas.width=Math.round(viewport.width);canvas.height=Math.round(viewport.height);await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('第 '+p+' 页转图失败');data.append('images',blob,'page-'+p+'.png')}status('正在本机识别 '+pdf.numPages+' 页谱面；首次运行或多页曲谱可能需要几分钟，请保持页面打开…');const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),16*60*1000);let res;try{try{await fetch(health.replace(/\/omr-health$/,'/omr-start'),{cache:'no-store'})}catch{}
+async function recognize(){recognitionSucceeded=false;if(!pdfBytes)return;const apiBase=(function(){try{if(window.p2kTunnel&&typeof window.p2kTunnel.base==='function'){var t=window.p2kTunnel.base();if(t)return t.replace(/\/+$/,'')+'/api';}if(window.p2kTunnel&&window.p2kTunnel.isPublicHost){throw new Error('识谱需要在你电脑上运行，请打开 '+window.p2kTunnel.localHint+' 后重试');}}catch(e){if(e&&e.message&&e.message.indexOf('识谱需要')===0)throw e;}try{if(typeof P2K_API==='string'&&P2K_API&&P2K_API!=='/api')return P2K_API}catch(e){}if(location.protocol!=='file:'&&location.origin&&location.origin.indexOf('http')===0)return location.origin+'/api';return '/api';})();const endpoint=apiBase+'/recognize',health=apiBase+'/omr-health';$('recognize').disabled=true;try{status('正在检查本机识谱服务…');let check;try{if(typeof p2kServiceEnsure==='function'){status('正在启动本机识谱服务…');await p2kServiceEnsure('识谱');}const omrStart=health.replace(/\/omr-health$/,'/omr-start');try{await fetch(omrStart,{cache:'no-store',signal:AbortSignal.timeout(60000)})}catch(error){lastError=error}const startedAt=Date.now();let lastError=null;check=null;while(Date.now()-startedAt<90000){try{const r=await fetch(health,{cache:'no-store'});if(r.ok){const payload=await r.json();if(payload.ok&&(payload.running||payload.installed)){check=payload;break;}lastError=new Error(payload.detail||'识谱引擎正在启动…');}else lastError=new Error('HTTP '+r.status)}catch(error){lastError=error}if(!check)await new Promise(done=>setTimeout(done,1200));}if(!check)throw Error((lastError&&lastError.message)||'识谱引擎还没就绪');}catch(error){throw Error('识谱引擎没能在 45 秒内就绪：'+((error&&error.message)||'未知原因')+'。请确认电脑上的谱键服务已启动，再点一次「AI 自动识谱」。')}if(!check.ok||!check.installed)throw Error(check.detail||'识谱引擎未安装或未就绪。请启动本机 P2K 服务后重试。');const data=new FormData();for(let p=1;p<=pdf.numPages;p++){status('正在为本机识谱准备第 '+p+' / '+pdf.numPages+' 页…');const page=await pdf.getPage(p),viewport=page.getViewport({scale:2}),canvas=document.createElement('canvas');canvas.width=Math.round(viewport.width);canvas.height=Math.round(viewport.height);await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('第 '+p+' 页转图失败');data.append('images',blob,'page-'+p+'.png')}status('正在本机识别 '+pdf.numPages+' 页谱面；首次运行或多页曲谱可能需要几分钟，请保持页面打开…');const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),16*60*1000);let res;try{try{await fetch(health.replace(/\/omr-health$/,'/omr-start'),{cache:'no-store'})}catch{}
 
 
 res=await fetch(endpoint,{method:'POST',body:data,headers:{Authorization:'Bearer '+(localStorage.getItem('p2k-account-token-v2')||'')},signal:controller.signal})}finally{clearTimeout(timeout)}let out={};try{out=await res.json()}catch{}if(!res.ok)throw Error(out.detail||('识谱服务返回 '+res.status));if(!Array.isArray(out.events)||!out.events.length)throw Error('没有识别到可练习的音符');events=out.events;index=0;persist();refresh();fitRange();$('source').textContent='AI 初步识别 · '+events.length+' 个拍位 · 请先校对';recognitionSucceeded=true;status('识别完成：'+events.length+' 个拍位。请先校对错音和指法，再开始练习。')}catch(e){const message=e.name==='AbortError'?'等待识谱超过 16 分钟，已取消。可先拆成少量页面再识别。':e.message;status('自动识谱失败：'+message+'。PDF 和谱面图片仍只在本机处理。')}finally{$('recognize').disabled=false}}
@@ -18027,87 +18027,30 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 })();
 </script><script>
 /* ============================================================================
-   谱键 P2K · 公网识谱通道（自动发现）
+   谱键 P2K · 识谱地址选择（本机优先）
    ----------------------------------------------------------------------------
-   AI 识谱需要 Python + ONNX 模型，浏览器跑不了。
-   电脑上的服务通过 Cloudflare 隧道有了一条 https 公网地址，
-   地址由电脑上的守护进程写进仓库的 tunnel.json。
+   事实：AI 识谱是 150MB 的 ONNX 模型，只能在你自己的电脑上跑。
+        公网页面（GitHub Pages）没有后端，也不存在可匿名借用的公开识谱接口。
+        经过实测，公网隧道（trycloudflare）在这台机器的网络上完全不可用。
 
-   本模块：
-     1) 打开页面时并行读几个数据源（谁先给出可用地址就用谁），2-3 秒内连上
-     2) 本机 / 局域网打开 → 直接用当前来源
-     3) 把地址暴露给页面，识谱请求走它
-     4) 界面显示状态：已连接 / 电脑未在线
+   所以这里的策略很简单、也很可靠：
+     · 本机 / 局域网打开  → 直接用当前服务，识谱完全可用
+     · 公网页面打开        → 明确告诉用户去哪儿识谱，并给出可点链接
+
+   不再做隧道发现（已禁用），省掉无用的网络探测和等待。
    ========================================================================== */
 (function () {
   'use strict';
 
-  /* APK 内置页是 file:// 打开，页面本身自包含且没有可用后端；
-     在 file:// 下做任何跨域探测都会被浏览器拦（CORS），只会制造报错。
-     所以这里直接不启用公网通道。 */
-  if (location.protocol === 'file:' || location.protocol === 'null:') {
-    window.p2kTunnel = {
-      version: '1.2.1',
-      discover: function () { return Promise.resolve(''); },
-      base: function () { return ''; },
-      isPublicHost: false,
-      disabled: true,
-    };
-    return;
-  }
-
   var PUBLIC_HOST = !/^(127\.0\.0\.1|localhost|\[::1\]|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
-  var state = { base: '', ready: false, probing: null };
+  var LOCAL_HINT = 'http://127.0.0.1:8766';
+  var state = { base: '', ready: false };
 
   function $(id) { return document.getElementById(id); }
 
-  function trySource(src) {
-    return fetch(src, { cache: 'no-store' })
-      .then(function (res) {
-        if (!res.ok) return '';
-        return res.json().then(function (data) {
-          var url = data && data.url;
-          if (!url) return '';
-          /* 快速验证这条地址真的能用，避免拿到过期地址 */
-          return fetch(url + '/api/health', { cache: 'no-store' })
-            .then(function (check) {
-              if (!check.ok) return '';
-              return check.json().then(function (body) {
-                return (body && body.ok) ? url : '';
-              });
-            })
-            .catch(function () { return ''; });
-        });
-      })
-      .catch(function () { return ''; });
-  }
-
-  function readTunnelUrl() {
-    var stamp = Date.now();
-    /* 三个源并行取：顺序等太慢，用户会以为没反应 */
-    var sources = [
-      './tunnel.json?cb=' + stamp,
-      'https://cdn.jsdelivr.net/gh/550513020/app@main/tunnel.json?cb=' + stamp,
-      'https://raw.githubusercontent.com/550513020/app/main/tunnel.json?cb=' + stamp,
-    ];
-    return new Promise(function (resolve) {
-      var pending = sources.length;
-      var settled = false;
-      sources.forEach(function (src) {
-        trySource(src).then(function (url) {
-          if (url && !settled) {
-            settled = true;
-            resolve(url);
-            return;
-          }
-          pending -= 1;
-          if (pending <= 0 && !settled) {
-            settled = true;
-            resolve('');
-          }
-        });
-      });
-    });
+  function chip(text, tone) {
+    var el = $('p2kOmrChip');
+    if (el) { el.textContent = text; el.dataset.state = tone || 'idle'; }
   }
 
   function localBase() {
@@ -18121,69 +18064,91 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
       .catch(function () { return ''; });
   }
 
-  function chip(text, tone) {
-    var el = $('p2kOmrChip');
-    if (el) { el.textContent = text; el.dataset.state = tone || 'idle'; }
-  }
-
   function remember(base) {
     state.base = base || '';
     state.ready = !!base;
-    try {
-      if (base) localStorage.setItem('p2k-omr-base-v1', base);
-      else localStorage.removeItem('p2k-omr-base-v1');
-    } catch (error) { /* 忽略 */ }
+  }
+
+  /* 公网页面：给一条明确的指引（可点击复制） */
+  function showPublicGuide() {
+    if ($('p2kOmrLocalGuide')) return;
+    var card = document.createElement('div');
+    card.id = 'p2kOmrLocalGuide';
+    card.style.cssText = 'margin:10px 0;padding:12px 15px;border-radius:11px;font-size:13.5px;'
+      + 'line-height:1.75;border:1px solid #e6d9b8;background:#fdf7e8;color:#5c4a1e;max-width:660px';
+    card.innerHTML = '<b>AI 识谱需要在你自己的电脑上运行</b><br>'
+      + '识谱用的是 150MB 的本地模型，只能在装了谱键服务的电脑上跑。<br>'
+      + '<b>请在你电脑上打开：</b>'
+      + '<a href="' + LOCAL_HINT + '" target="_blank" rel="noopener" '
+      + 'style="color:#1f8a63;font-weight:700">' + LOCAL_HINT + '</a>'
+      + '<button type="button" id="p2kCopyLocal" '
+      + 'style="margin-left:8px;padding:4px 10px;border:1px solid #cbb98a;border-radius:7px;'
+      + 'background:#fff;cursor:pointer;font-size:12px">复制地址</button>'
+      + '<div style="margin-top:6px;color:#7a6a45">'
+      + '本页其他功能（找谱、看谱、演示教程、仓库、练习）都能正常用。</div>';
+    var host = $('p2kStudioBody') || $('p2kStudioPanel') || document.body;
+
+    /* 优先插在识谱按钮附近，找不到就插在面板顶部 */
+    var anchor = $('recognize');
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(card, anchor.nextSibling);
+    } else {
+      host.insertBefore(card, host.firstChild);
+    }
+
+    var copy = $('p2kCopyLocal');
+    if (copy) {
+      copy.addEventListener('click', function () {
+        var done = function () { copy.textContent = '已复制'; setTimeout(function () { copy.textContent = '复制地址'; }, 1600); };
+        try {
+          if (navigator.clipboard) navigator.clipboard.writeText(LOCAL_HINT).then(done, done);
+          else done();
+        } catch (error) { done(); }
+      });
+    }
   }
 
   function discover() {
-    if (state.probing) return state.probing;
-    var first = PUBLIC_HOST ? Promise.resolve('') : localBase();
-    state.probing = first.then(function (local) {
-      if (local) {
-        remember(local);
+    if (PUBLIC_HOST) {
+      remember('');
+      chip('识谱引擎：需在本机使用', 'warn');
+      showPublicGuide();
+      return Promise.resolve('');
+    }
+    chip('识谱引擎：正在连接…', 'warm');
+    return localBase().then(function (base) {
+      if (base) {
+        remember(base);
         chip('识谱引擎：就绪', 'ok');
-        return local;
+        return base;
       }
-      chip('识谱引擎：正在连接电脑…', 'warm');
-      return readTunnelUrl().then(function (tunnel) {
-        if (tunnel) {
-          remember(tunnel);
-          chip('识谱引擎：已连接（电脑在线）', 'ok');
-          return tunnel;
-        }
-        remember('');
-        chip(PUBLIC_HOST ? '识谱引擎：电脑未在线' : '识谱引擎：待预热', 'warn');
-        return '';
-      });
+      remember('');
+      chip('识谱引擎：未启动', 'warn');
+      return '';
     });
-    state.probing.then(function () { state.probing = null; },
-      function () { state.probing = null; });
-    return state.probing;
   }
 
   function boot() {
-    try {
-      var saved = localStorage.getItem('p2k-omr-base-v1');
-      if (saved) { state.base = saved; state.ready = true; }
-    } catch (error) { /* 忽略 */ }
-
     discover();
+    /* 本机场景：服务可能刚启动，多试几次 */
     var tries = 0;
     var timer = setInterval(function () {
       tries += 1;
-      if (state.ready || tries > 40) { clearInterval(timer); return; }
+      if (state.ready || tries > 20) { clearInterval(timer); return; }
       discover();
     }, 1500);
   }
 
-  if (document.readyState === 'complete') setTimeout(boot, 500);
-  else window.addEventListener('load', function () { setTimeout(boot, 500); }, { once: true });
+  if (document.readyState === 'complete') setTimeout(boot, 400);
+  else window.addEventListener('load', function () { setTimeout(boot, 400); }, { once: true });
 
   window.p2kTunnel = {
-    version: '1.2.0',
+    version: '2.0.0',
+    localOnly: true,
     discover: discover,
     base: function () { return state.base; },
     isPublicHost: PUBLIC_HOST,
+    localHint: LOCAL_HINT,
   };
 })();
 </script><script>/* ============================================================================
