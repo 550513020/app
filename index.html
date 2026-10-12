@@ -17452,46 +17452,282 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     activatePracticeMode: activatePracticeMode,
   };
 })();
-</script><script>/* ============================================================================
-   谱键 P2K · 手机屏幕弹奏（手机练习模式）
+</script><script>
+/* ============================================================================
+   谱键 P2K · 手机屏幕弹奏（重写版，像完美钢琴那样）
    ----------------------------------------------------------------------------
-   在外面没带电钢琴时，直接用手机屏幕弹：
-     · 屏幕下方是一排琴键（默认 2 个八度，可加减）
-     · 多个手指同时按 → 同时出声（每个手指一个音）
-     · 退出 / 暂停 等功能收在左上角 ☰ 菜单里，默认不挡琴键
-     · 可打开/关闭「跟弹」：高亮当前该弹的音
+   旧版为什么不行：
+     1) 发声靠调用页面内部的 playMidi()，但那是 IIFE 内部函数，
+        window.playMidi 是 undefined —— 所以**永远没声音**，
+        而且 catch 里静默吞掉，连报错都没有。
+     2) 触摸处理里的 preventDefault / 页面返回逻辑会互相打架，
+        点一下有时被当成"返回"。
+
+   这一版改成：
+     · **自包含音频引擎**：优先用仓库里的钢琴采样（真实音色），
+       取不到就用多谐波合成（也很像钢琴），完全不依赖页面内部函数
+     · 移动端必须的音频解锁：首次触摸时 resume() AudioContext
+     · 触摸全覆盖：touchstart/move/end/cancel + 鼠标 + Pointer 事件
+     · 彻底隔离：所有触摸事件在自己面板内处理，不冒泡到页面
    ========================================================================== */
 (function () {
   'use strict';
 
   var SHARP = [1, 3, 6, 8, 10];
   var NAME = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
   var state = {
     on: false,
     octaves: 2,
-    baseMidi: 60,          /* 起始音：中央 C */
+    baseMidi: 60,
     follow: true,
-    active: {},            /* touchId -> midi */
+    active: {},          /* pointerId -> {midi, el} */
   };
 
   function $(id) { return document.getElementById(id); }
-  function isPhone() { return /[?&]mode=app/.test(location.search) || document.body.classList.contains('phone-mode'); }
-
+  function isPhone() {
+    return /[?&]mode=app/.test(location.search) || document.body.classList.contains('phone-mode');
+  }
   function noteName(midi) {
     return NAME[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
   }
-
   function isSharp(midi) {
     return SHARP.indexOf(((midi % 12) + 12) % 12) >= 0;
   }
+  function midiToFreq(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
 
-  /* ------------------------------------------------------------------ 样式 */
+  /* ================================================================ 音频引擎
+     优先真实采样，退化到合成。全部自包含，不依赖页面任何内部函数。 */
+
+  var audio = null;
+  var master = null;
+  var sampleBank = null;       /* { midi: AudioBuffer } */
+  var sampleLoading = null;
+  var voices = {};             /* midi -> {gain, sources[]} */
+
+  function isLocalPage() {
+    return location.protocol === 'file:' || location.protocol === 'null:';
+  }
+
+  function ctx() {
+    if (!audio) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      audio = new AC();
+      master = audio.createGain();
+      master.gain.value = 0.85;
+      master.connect(audio.destination);
+    }
+    if (audio.state === 'suspended') {
+      try { audio.resume(); } catch (e) { /* 忽略 */ }
+    }
+    return audio;
+  }
+
+  /* 音名 → MIDI（采样文件的键是 'A0' / 'C4' 这种音名） */
+  var LETTER = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  function nameToMidi(name) {
+    var m = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(String(name).trim());
+    if (!m) return NaN;
+    var base = LETTER[m[1].toUpperCase()];
+    if (base === undefined) return NaN;
+    if (m[2] === '#') base += 1;
+    else if (m[2] === 'b') base -= 1;
+    return base + (Number(m[3]) + 1) * 12;
+  }
+
+  /* 采样来源：先页面内嵌（APK 离线场景），再静态文件 */
+  function inlineSamples() {
+    try {
+      var raw = window.P2K_PIANO_SAMPLES_INLINE;
+      if (raw) return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch (e) { /* 忽略 */ }
+    return null;
+  }
+
+  function sampleSources() {
+    var out = [];
+    if (!isLocalPage()) out.push('./assets/piano-samples.json');
+    out.push('assets/piano-samples.json');
+    return out;
+  }
+
+  function looksLikeBase64(value) {
+    return typeof value === 'string' && value.length > 200 && /^[A-Za-z0-9+/=\s]+$/.test(value.slice(0, 200));
+  }
+
+  function loadSamples() {
+    if (sampleBank || sampleLoading) return sampleLoading;
+    sampleLoading = (async function () {
+      var data = inlineSamples();
+      if (!data) {
+        for (var i = 0; i < sampleSources().length && !data; i++) {
+          try {
+            var res = await fetch(sampleSources()[i], { cache: 'force-cache' });
+            if (res.ok) data = await res.json();
+          } catch (e) { /* 换下一个来源 */ }
+        }
+      }
+      if (!data) return null;
+
+      var ac = ctx();
+      if (!ac) return null;
+
+      var bank = {};
+      var names = Object.keys(data);
+      for (var k = 0; k < names.length; k++) {
+        var key = names[k];
+        var value = data[key];
+        if (!looksLikeBase64(value)) continue;
+        /* 键可能是音名（A4）也可能是 MIDI 数字 */
+        var midi = /^\d+$/.test(key) ? Number(key) : nameToMidi(key);
+        if (isNaN(midi)) continue;
+        try {
+          var raw = value.indexOf(',') >= 0 && value.indexOf('data:') === 0
+            ? value.split(',')[1] : value;
+          var bytes = base64ToBytes(raw.replace(/\s+/g, ''));
+          bank[midi] = await ac.decodeAudioData(bytes.buffer);
+        } catch (e) { /* 跳过坏样本 */ }
+      }
+      if (Object.keys(bank).length) {
+        sampleBank = bank;
+        return bank;
+      }
+      return null;
+    })();
+    return sampleLoading;
+  }
+
+  function base64ToBytes(b64) {
+    var bin = atob(b64);
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  /* 找到离目标音最近的采样 */
+  function nearestSample(midi) {
+    if (!sampleBank) return null;
+    if (sampleBank[midi]) return { buffer: sampleBank[midi], rate: 1 };
+    var keys = Object.keys(sampleBank).map(Number).sort(function (a, b) { return a - b; });
+    if (!keys.length) return null;
+    var best = keys[0];
+    var bestDist = Math.abs(keys[0] - midi);
+    keys.forEach(function (k) {
+      var d = Math.abs(k - midi);
+      if (d < bestDist) { best = k; bestDist = d; }
+    });
+    return { buffer: sampleBank[best], rate: Math.pow(2, (midi - best) / 12) };
+  }
+
+  /* 合成钢琴音：多个谐波 + 指数衰减包络 */
+  function synthNote(ac, midi, when, durationSec) {
+    var freq = midiToFreq(midi);
+    var gain = ac.createGain();
+    var out = ac.createGain();
+    out.gain.value = 0.0;
+
+    var partials = [
+      [1, 1.00], [2, 0.42], [3, 0.24], [4, 0.14],
+      [5, 0.08], [6, 0.05], [7, 0.03], [8, 0.02],
+    ];
+    var sources = [];
+    var sum = 0;
+    partials.forEach(function (p) { sum += p[1]; });
+
+    partials.forEach(function (p) {
+      var osc = ac.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = freq * p[0];
+      var g = ac.createGain();
+      g.gain.value = p[1] / sum;
+      osc.connect(g);
+      g.connect(out);
+      osc.start(when);
+      osc.stop(when + durationSec + 0.35);
+      sources.push(osc);
+    });
+
+    /* 钢琴式包络：极快起音 + 指数衰减 */
+    var peak = 0.34;
+    out.gain.setValueAtTime(0, when);
+    out.gain.linearRampToValueAtTime(peak, when + 0.006);
+    out.gain.exponentialRampToValueAtTime(peak * 0.30, when + 0.16);
+    out.gain.exponentialRampToValueAtTime(peak * 0.010, when + durationSec + 0.30);
+    out.connect(gain);
+    gain.connect(master);
+    return { out: out, sources: sources };
+  }
+
+  function noteOn(midi) {
+    var ac = ctx();
+    if (!ac) return;
+    if (voices[midi]) return;          /* 同一个音不重复叠加 */
+
+    var when = ac.currentTime;
+    var dur = 1.6;
+
+    if (sampleBank) {
+      var pick = nearestSample(midi);
+      if (pick) {
+        var src = ac.createBufferSource();
+        src.buffer = pick.buffer;
+        src.playbackRate.value = pick.rate;
+        var g = ac.createGain();
+        g.gain.value = 0.9;
+        src.connect(g);
+        g.connect(master);
+        src.start(when);
+        voices[midi] = { gain: g, sources: [src], node: g };
+        return;
+      }
+    }
+
+    /* 还没加载完采样 → 先用合成顶着，保证"点了就有声" */
+    var voice = synthNote(ac, midi, when, dur);
+    voices[midi] = { gain: voice.out, sources: voice.sources, node: voice.out };
+    if (!sampleLoading) loadSamples();
+  }
+
+  function noteOff(midi) {
+    var voice = voices[midi];
+    if (!voice) return;
+    delete voices[midi];
+    var ac = audio;
+    if (!ac) return;
+    try {
+      var now = ac.currentTime;
+      voice.gain.gain.cancelScheduledValues(now);
+      voice.gain.gain.setValueAtTime(Math.max(voice.gain.gain.value, 0.0001), now);
+      voice.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+      voice.sources.forEach(function (s) {
+        try { s.stop(now + 0.26); } catch (e) { /* 已停 */ }
+      });
+    } catch (e) { /* 忽略 */ }
+  }
+
+  function allOff() {
+    Object.keys(voices).forEach(function (midi) { noteOff(Number(midi)); });
+  }
+
+  window.p2kPiano = {
+    version: '1.0.0',
+    unlock: function () { ctx(); loadSamples(); return !!audio; },
+    noteOn: noteOn,
+    noteOff: noteOff,
+    allOff: allOff,
+    ready: function () { return !!sampleBank; },
+  };
+
+  /* ================================================================ 界面 */
+
   var CSS = ''
-    + '.p2k-play{position:fixed;left:0;right:0;bottom:0;z-index:50;'
-    + 'background:linear-gradient(180deg,rgba(18,32,26,.96),rgba(12,22,18,.99));'
+    + '.p2k-play{position:fixed;left:0;right:0;bottom:0;z-index:99970;'
+    + 'background:linear-gradient(180deg,rgba(18,32,26,.97),rgba(12,22,18,.995));'
     + 'border-top:1px solid rgba(255,255,255,.14);'
     + 'padding:6px 6px calc(env(safe-area-inset-bottom) + 6px);'
-    + 'box-shadow:0 -8px 26px rgba(0,0,0,.4);display:none;user-select:none}'
+    + 'box-shadow:0 -8px 26px rgba(0,0,0,.45);display:none;user-select:none;'
+    + '-webkit-user-select:none;touch-action:none}'
     + '.p2k-play.on{display:block}'
     + '.p2k-play-bar{display:flex;align-items:center;gap:6px;padding:2px 4px 7px;color:#cfe3d8;font-size:12.5px}'
     + '.p2k-play-bar button{all:unset;min-width:34px;height:30px;padding:0 10px;border-radius:9px;'
@@ -17499,28 +17735,26 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     + '.p2k-play-bar button:active{background:rgba(255,255,255,.22)}'
     + '.p2k-play-bar button.on{background:#1f8a63;color:#fff}'
     + '.p2k-play-bar .p2k-play-spacer{flex:1}'
-    + '.p2k-play-keys{position:relative;height:30vh;min-height:130px;max-height:200px;'
-    + 'overflow-x:auto;overflow-y:hidden;white-space:nowrap;touch-action:pan-x;'
-    + '-webkit-overflow-scrolling:touch}'
-    + '.p2k-play-inner{position:relative;height:100%;white-space:nowrap}'
+    + '.p2k-play-keys{position:relative;height:32vh;min-height:140px;max-height:220px;'
+    + 'overflow-x:auto;overflow-y:hidden;touch-action:pan-x}'
+    + '.p2k-play-inner{position:relative;height:100%}'
     + '.p2k-pk{position:absolute;top:0;display:flex;align-items:flex-end;justify-content:center;'
     + 'padding-bottom:6px;font-size:10.5px;font-weight:600;box-sizing:border-box;'
-    + 'border-radius:0 0 7px 7px;cursor:pointer}'
+    + 'border-radius:0 0 7px 7px;cursor:pointer;transition:background .05s}'
     + '.p2k-pk.white{background:linear-gradient(180deg,#fbfdfb,#e6ece7);color:#3a4a43;'
     + 'border:1px solid #a7b2aa;z-index:1}'
     + '.p2k-pk.black{background:linear-gradient(180deg,#2c3a34,#141d19);color:#cfe3d8;'
     + 'border:1px solid #0e1613;z-index:2}'
-    + '.p2k-pk.down{background:linear-gradient(180deg,#7fd2ab,#3aa877);color:#062017}'
+    + '.p2k-pk.down{background:linear-gradient(180deg,#7fd2ab,#3aa877);color:#062017;'
+    + 'box-shadow:inset 0 -6px 14px rgba(0,0,0,.28)}'
+    + '.p2k-pk.black.down{background:linear-gradient(180deg,#3aa877,#1f8a63);color:#eafff5}'
     + '.p2k-pk.target::after{content:"";position:absolute;inset:auto 12% 4px;height:4px;'
     + 'border-radius:3px;background:#ffb703}'
-    + '.p2k-play-hint{position:fixed;left:10px;right:10px;bottom:calc(30vh + 50px);z-index:49;'
+    + '.p2k-play-hint{position:fixed;left:10px;right:10px;bottom:calc(32vh + 52px);z-index:99969;'
     + 'padding:8px 12px;border-radius:11px;background:rgba(24,42,34,.95);color:#eaf4ee;'
     + 'font-size:12.5px;line-height:1.6;display:none}'
     + '.p2k-play-hint.on{display:block}'
-    /* 弹奏面板打开时，把左上角 ☰ 挪到面板上方，避免压住标题/按钮 */
-    + 'body.p2k-play-open #p2kFab{top:auto;bottom:calc(30vh + 58px);left:10px}'
-    + 'body.p2k-play-open #p2kMenu{top:auto;bottom:calc(30vh + 110px);left:10px;max-height:46vh;overflow:auto}'
-    + 'body.p2k-play-open{padding-bottom:34vh}';
+    + 'body.p2k-play-open{padding-bottom:36vh}';
 
   function ensureStyle() {
     if (document.getElementById('p2kPlayStyle')) return;
@@ -17530,7 +17764,6 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     document.head.appendChild(style);
   }
 
-  /* ------------------------------------------------------------ 键盘绘制 */
   function whiteCount() {
     var count = 0;
     for (var i = 0; i < state.octaves * 12; i++) {
@@ -17552,13 +17785,11 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
       var sharp = isSharp(midi);
       var key = document.createElement('div');
       key.className = 'p2k-pk ' + (sharp ? 'black' : 'white');
-      key.dataset.midi = String(midi);
+      key.setAttribute('data-midi', String(midi));
       if (sharp) {
-        /* 黑键骑在两个白键中间 */
         key.style.width = (unit * 0.62) + '%';
         key.style.height = '62%';
         key.style.left = ((totalWhites - 0.31) * unit) + '%';
-        key.style.fontSize = '0';
       } else {
         key.style.width = unit + '%';
         key.style.left = (totalWhites * unit) + '%';
@@ -17567,120 +17798,135 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
       }
       inner.appendChild(key);
     }
-    inner.style.width = (whites * 46) + 'px';
-    inner.style.minWidth = (whites * 46) + 'px';
+    inner.style.width = Math.max(whites * 52, 320) + 'px';
     markTarget();
   }
 
-  /* --------------------------------------------------------- 发声（多指） */
+  /* 按下 / 抬起 */
   function press(midi, el) {
     if (el) el.classList.add('down');
-    try {
-      if (typeof playMidi === 'function') playMidi([midi], 1.6);
-      else if (typeof window.playMidi === 'function') window.playMidi([midi], 1.6);
-    } catch (e) { /* 忽略 */ }
-    var now = $('phoneNowNow') || $('phoneNow');
-    if (now) now.textContent = noteName(midi);
+    noteOn(midi);
+    var status = $('p2kPlayNow');
+    if (status) status.textContent = noteName(midi);
   }
 
-  function release(el) {
+  function lift(midi, el) {
     if (el) el.classList.remove('down');
+    noteOff(midi);
   }
 
-  function bindKeys() {
-    var host = document.getElementById('p2kPlayKeys');
-    if (!host || host.__bound) return;
-    host.__bound = true;
-
-    function keyAt(x, y) {
-      var el = document.elementFromPoint(x, y);
-      while (el && el !== host) {
-        if (el.classList && el.classList.contains('p2k-pk')) return el;
-        el = el.parentElement;
-      }
-      return null;
+  function keyAt(x, y) {
+    var host = $('p2kPlayKeys');
+    if (!host) return null;
+    var el = document.elementFromPoint(x, y);
+    while (el) {
+      if (el.classList && el.classList.contains('p2k-pk')) return el;
+      if (el === host) break;
+      el = el.parentElement;
     }
+    return null;
+  }
 
-    function down(id, x, y) {
+  var hostBound = false;
+  function bindKeys() {
+    var host = $('p2kPlayKeys');
+    if (!host || hostBound) return;
+    hostBound = true;
+
+    function handleDown(id, x, y) {
       var key = keyAt(x, y);
       if (!key) return;
-      var midi = Number(key.dataset.midi);
+      var midi = Number(key.getAttribute('data-midi'));
       if (isNaN(midi)) return;
+      if (state.active[id]) lift(state.active[id].midi, state.active[id].el);
       state.active[id] = { midi: midi, el: key };
       press(midi, key);
     }
 
-    function up(id) {
-      var item = state.active[id];
-      if (!item) return;
-      release(item.el);
+    function handleMove(id, x, y) {
+      var current = state.active[id];
+      if (!current) return;
+      var key = keyAt(x, y);
+      if (!key) return;
+      var midi = Number(key.getAttribute('data-midi'));
+      if (isNaN(midi) || midi === current.midi) return;
+      lift(current.midi, current.el);
+      state.active[id] = { midi: midi, el: key };
+      press(midi, key);
+    }
+
+    function handleUp(id) {
+      var current = state.active[id];
+      if (!current) return;
+      lift(current.midi, current.el);
       delete state.active[id];
     }
 
+    /* --- 触摸：多点同时按 --- */
     host.addEventListener('touchstart', function (event) {
-      var touches = event.changedTouches || [];
-      for (var i = 0; i < touches.length; i++) {
-        down(String(touches[i].identifier), touches[i].clientX, touches[i].clientY);
+      ctx();                       /* 移动端必须在这里解锁音频 */
+      loadSamples();
+      var list = event.changedTouches || [];
+      for (var i = 0; i < list.length; i++) {
+        handleDown('t' + list[i].identifier, list[i].clientX, list[i].clientY);
       }
       event.preventDefault();
+      event.stopPropagation();
     }, { passive: false });
 
     host.addEventListener('touchmove', function (event) {
-      /* 手指滑到别的键：换音（像真的划过琴键） */
-      var touches = event.changedTouches || [];
-      for (var i = 0; i < touches.length; i++) {
-        var id = String(touches[i].identifier);
-        var key = keyAt(touches[i].clientX, touches[i].clientY);
-        if (!key) continue;
-        var midi = Number(key.dataset.midi);
-        var current = state.active[id];
-        if (!current || current.midi !== midi) {
-          if (current) release(current.el);
-          state.active[id] = { midi: midi, el: key };
-          press(midi, key);
-        }
+      var list = event.changedTouches || [];
+      for (var i = 0; i < list.length; i++) {
+        handleMove('t' + list[i].identifier, list[i].clientX, list[i].clientY);
       }
       event.preventDefault();
+      event.stopPropagation();
     }, { passive: false });
 
-    function endAll(event) {
-      var touches = event.changedTouches || [];
-      for (var i = 0; i < touches.length; i++) up(String(touches[i].identifier));
+    function touchEnd(event) {
+      var list = event.changedTouches || [];
+      for (var i = 0; i < list.length; i++) handleUp('t' + list[i].identifier);
+      event.preventDefault();
+      event.stopPropagation();
     }
-    host.addEventListener('touchend', endAll);
-    host.addEventListener('touchcancel', endAll);
+    host.addEventListener('touchend', touchEnd, { passive: false });
+    host.addEventListener('touchcancel', touchEnd, { passive: false });
 
-    /* 鼠标 / 单点（电脑上调试用；也支持按住拖动） */
+    /* --- 鼠标（电脑调试 + 触摸板） --- */
     var mouseDown = false;
     host.addEventListener('mousedown', function (event) {
+      ctx();
       mouseDown = true;
-      down('mouse', event.clientX, event.clientY);
+      handleDown('mouse', event.clientX, event.clientY);
       event.preventDefault();
+      event.stopPropagation();
     });
     host.addEventListener('mousemove', function (event) {
       if (!mouseDown) return;
-      var key = keyAt(event.clientX, event.clientY);
-      if (!key) return;
-      var midi = Number(key.dataset.midi);
-      var current = state.active.mouse;
-      if (!current || current.midi !== midi) {
-        if (current) release(current.el);
-        state.active.mouse = { midi: midi, el: key };
-        press(midi, key);
-      }
+      handleMove('mouse', event.clientX, event.clientY);
     });
     window.addEventListener('mouseup', function () {
+      if (!mouseDown) return;
       mouseDown = false;
-      up('mouse');
+      handleUp('mouse');
+    });
+
+    /* 面板收起时，确保所有音都停 */
+    window.addEventListener('blur', function () {
+      allOff();
+      Object.keys(state.active).forEach(function (id) {
+        var item = state.active[id];
+        if (item && item.el) item.el.classList.remove('down');
+        delete state.active[id];
+      });
     });
   }
 
-  /* ------------------------------------------------------ 跟弹高亮当前音 */
   function markTarget() {
-    if (!state.follow) return;
-    var inner = document.getElementById('p2kPlayInner');
+    var inner = $('p2kPlayInner');
     if (!inner) return;
-    [].slice.call(inner.children).forEach(function (node) { node.classList.remove('target'); });
+    [].slice.call(inner.children).forEach(function (n) { n.classList.remove('target'); });
+    if (!state.follow) return;
     var current = null;
     try {
       if (typeof phoneScore === 'object' && phoneScore) {
@@ -17695,9 +17941,8 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     });
   }
 
-  /* ------------------------------------------------------------ 打开/关闭 */
   function panel() {
-    var existing = document.getElementById('p2kPlay');
+    var existing = $('p2kPlay');
     if (existing) return existing;
 
     ensureStyle();
@@ -17706,10 +17951,11 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     wrap.className = 'p2k-play';
     wrap.innerHTML = ''
       + '<div class="p2k-play-bar">'
-      + '  <button type="button" id="p2kPlayMinus" aria-label="降八度">−8</button>'
-      + '  <button type="button" id="p2kPlayPlus" aria-label="升八度">+8</button>'
+      + '  <button type="button" id="p2kPlayMinus">−8</button>'
+      + '  <button type="button" id="p2kPlayPlus">+8</button>'
       + '  <button type="button" id="p2kPlayFollow" class="on">跟弹</button>'
       + '  <span class="p2k-play-spacer"></span>'
+      + '  <span id="p2kPlayNow" style="color:#7fd2ab;font-weight:700;min-width:44px;text-align:center">—</span>'
       + '  <button type="button" id="p2kPlayClose">收起</button>'
       + '</div>'
       + '<div class="p2k-play-keys" id="p2kPlayKeys"><div class="p2k-play-inner" id="p2kPlayInner"></div></div>';
@@ -17718,28 +17964,23 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     var hint = document.createElement('div');
     hint.id = 'p2kPlayHint';
     hint.className = 'p2k-play-hint';
-    hint.textContent = '手指按住琴键就能发声；多个手指同时按可以同时弹多个音。左右滑动可以移调。左上角 ☰ 是退出/暂停菜单。';
+    hint.textContent = '按住琴键就发声，多个手指同时按可同时弹多个音。左右滑动移调，左上角 ☰ 是菜单。';
     document.body.appendChild(hint);
 
-    wrap.querySelector('#p2kPlayPlus').addEventListener('click', function () {
-      state.baseMidi = Math.min(96, state.baseMidi + 12);
-      if (state.baseMidi + state.octaves * 12 > 108) state.baseMidi = 108 - state.octaves * 12;
+    $('p2kPlayPlus').addEventListener('click', function () {
+      state.baseMidi = Math.min(84, state.baseMidi + 12);
       layout();
     });
-    wrap.querySelector('#p2kPlayMinus').addEventListener('click', function () {
-      state.baseMidi = Math.max(21, state.baseMidi - 12);
+    $('p2kPlayMinus').addEventListener('click', function () {
+      state.baseMidi = Math.max(24, state.baseMidi - 12);
       layout();
     });
-    wrap.querySelector('#p2kPlayFollow').addEventListener('click', function (event) {
+    $('p2kPlayFollow').addEventListener('click', function (event) {
       state.follow = !state.follow;
       event.target.classList.toggle('on', state.follow);
-      if (state.follow) markTarget();
-      else {
-        var inner = document.getElementById('p2kPlayInner');
-        if (inner) [].slice.call(inner.children).forEach(function (n) { n.classList.remove('target'); });
-      }
+      markTarget();
     });
-    wrap.querySelector('#p2kPlayClose').addEventListener('click', function () { toggle(false); });
+    $('p2kPlayClose').addEventListener('click', function () { toggle(false); });
 
     bindKeys();
     return wrap;
@@ -17750,31 +17991,41 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     var wrap = panel();
     wrap.classList.toggle('on', state.on);
     document.body.classList.toggle('p2k-play-open', state.on);
-    var hint = document.getElementById('p2kPlayHint');
+    var hint = $('p2kPlayHint');
     if (hint) hint.classList.toggle('on', state.on);
+
     if (state.on) {
+      ctx();                 /* 用户点击 = 解锁音频的最佳时机 */
+      loadSamples();
       layout();
-      try { if (typeof playMidi === 'function') playMidi([]); } catch (e) { /* 预热音频 */ }
     } else {
+      allOff();
       Object.keys(state.active).forEach(function (id) {
-        release(state.active[id].el);
+        var item = state.active[id];
+        if (item && item.el) item.el.classList.remove('down');
         delete state.active[id];
       });
     }
     return state.on;
   }
 
-  /* 自动高亮：练习页在跑时定时更新 */
   setInterval(function () {
     if (state.on && state.follow) markTarget();
   }, 400);
 
   window.p2kPhonePlay = {
-    version: '1.0.0',
+    version: '2.0.0',
     toggle: toggle,
     isOn: function () { return state.on; },
-    setBase: function (midi) { state.baseMidi = Math.max(21, Math.min(96, midi)); if (state.on) layout(); },
-    setOctaves: function (n) { state.octaves = Math.max(1, Math.min(5, n)); if (state.on) layout(); },
+    setBase: function (midi) {
+      state.baseMidi = Math.max(24, Math.min(84, midi));
+      if (state.on) layout();
+    },
+    setOctaves: function (n) {
+      state.octaves = Math.max(1, Math.min(5, n));
+      if (state.on) layout();
+    },
+    unlock: function () { ctx(); loadSamples(); },
   };
 })();
 </script><script>/* ============================================================================
