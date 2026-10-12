@@ -17454,21 +17454,19 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 })();
 </script><script>
 /* ============================================================================
-   谱键 P2K · 手机屏幕弹奏（重写版，像完美钢琴那样）
+   谱键 P2K · 手机纯净演奏模式（v3）
    ----------------------------------------------------------------------------
-   旧版为什么不行：
-     1) 发声靠调用页面内部的 playMidi()，但那是 IIFE 内部函数，
-        window.playMidi 是 undefined —— 所以**永远没声音**，
-        而且 catch 里静默吞掉，连报错都没有。
-     2) 触摸处理里的 preventDefault / 页面返回逻辑会互相打架，
-        点一下有时被当成"返回"。
+   用户要求（对着截图提的）：
+     · 键位要正确 —— 黑键必须骑在两个白键之间，白键等宽不被切
+     · 可以自己选「键数 / 音域」
+     · **纯净模式**：不要弹出任何浮窗、提示、菜单挡着琴键
 
-   这一版改成：
-     · **自包含音频引擎**：优先用仓库里的钢琴采样（真实音色），
-       取不到就用多谐波合成（也很像钢琴），完全不依赖页面内部函数
-     · 移动端必须的音频解锁：首次触摸时 resume() AudioContext
-     · 触摸全覆盖：touchstart/move/end/cancel + 鼠标 + Pointer 事件
-     · 彻底隔离：所有触摸事件在自己面板内处理，不冒泡到页面
+   键位算法（与页面练习模式键盘一致，已验证正确）：
+     白键等宽排列：      left = 白键序号 × 键宽
+     黑键骑在两个白键中间：left = 白键序号 × 键宽 − 键宽 × 0.31
+                          宽 = 键宽 × 0.62
+
+   音频：自包含引擎（真实采样 → 合成兜底），多点触控，不依赖页面内部函数。
    ========================================================================== */
 (function () {
   'use strict';
@@ -17478,36 +17476,26 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   var state = {
     on: false,
-    octaves: 2,
-    baseMidi: 60,
-    follow: true,
-    active: {},          /* pointerId -> {midi, el} */
+    baseOctave: 4,        /* 起始八度：C4 = 中央 C */
+    octaves: 2,           /* 显示几个八度 */
+    autoFit: true,        /* 自动铺满屏宽 */
+    keyWidth: 52,         /* 手动键宽 */
+    volume: 0.85,
+    active: {},
   };
 
   function $(id) { return document.getElementById(id); }
-  function isPhone() {
-    return /[?&]mode=app/.test(location.search) || document.body.classList.contains('phone-mode');
-  }
-  function noteName(midi) {
-    return NAME[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
-  }
-  function isSharp(midi) {
-    return SHARP.indexOf(((midi % 12) + 12) % 12) >= 0;
-  }
+  function noteName(midi) { return NAME[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1); }
+  function isBlack(midi) { return SHARP.indexOf(((midi % 12) + 12) % 12) >= 0; }
   function midiToFreq(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
 
-  /* ================================================================ 音频引擎
-     优先真实采样，退化到合成。全部自包含，不依赖页面任何内部函数。 */
+  /* ============================================================== 音频引擎 */
 
   var audio = null;
   var master = null;
-  var sampleBank = null;       /* { midi: AudioBuffer } */
+  var sampleBank = null;
   var sampleLoading = null;
-  var voices = {};             /* midi -> {gain, sources[]} */
-
-  function isLocalPage() {
-    return location.protocol === 'file:' || location.protocol === 'null:';
-  }
+  var voices = {};
 
   function ctx() {
     if (!audio) {
@@ -17515,7 +17503,7 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
       if (!AC) return null;
       audio = new AC();
       master = audio.createGain();
-      master.gain.value = 0.85;
+      master.gain.value = state.volume;
       master.connect(audio.destination);
     }
     if (audio.state === 'suspended') {
@@ -17524,7 +17512,6 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     return audio;
   }
 
-  /* 音名 → MIDI（采样文件的键是 'A0' / 'C4' 这种音名） */
   var LETTER = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
   function nameToMidi(name) {
     var m = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(String(name).trim());
@@ -17536,10 +17523,7 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     return base + (Number(m[3]) + 1) * 12;
   }
 
-  /* 采样来源：先页面内嵌（APK/file:// 离线场景），再静态文件。
-     页面把采样放在 <script type="application/json" id="pianoSamples"> 里。 */
   function inlineSamples() {
-    /* 1) 页面自己的 JSON 数据块 */
     try {
       var node = document.getElementById('pianoSamples');
       if (node && node.textContent && node.textContent.length > 100) {
@@ -17547,7 +17531,6 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
         if (parsed && Object.keys(parsed).length) return parsed;
       }
     } catch (e) { /* 忽略 */ }
-    /* 2) 兜底：某些版本会挂到 window */
     try {
       var raw = window.P2K_PIANO_SAMPLES_INLINE;
       if (raw && typeof raw === 'object' && Object.keys(raw).length) return raw;
@@ -17556,57 +17539,9 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     return null;
   }
 
-  function sampleSources() {
-    var out = [];
-    if (!isLocalPage()) out.push('./assets/piano-samples.json');
-    out.push('assets/piano-samples.json');
-    return out;
-  }
-
   function looksLikeBase64(value) {
-    return typeof value === 'string' && value.length > 200 && /^[A-Za-z0-9+/=\s]+$/.test(value.slice(0, 200));
-  }
-
-  function loadSamples() {
-    if (sampleBank || sampleLoading) return sampleLoading;
-    sampleLoading = (async function () {
-      var data = inlineSamples();
-      if (!data) {
-        for (var i = 0; i < sampleSources().length && !data; i++) {
-          try {
-            var res = await fetch(sampleSources()[i], { cache: 'force-cache' });
-            if (res.ok) data = await res.json();
-          } catch (e) { /* 换下一个来源 */ }
-        }
-      }
-      if (!data) return null;
-
-      var ac = ctx();
-      if (!ac) return null;
-
-      var bank = {};
-      var names = Object.keys(data);
-      for (var k = 0; k < names.length; k++) {
-        var key = names[k];
-        var value = data[key];
-        if (!looksLikeBase64(value)) continue;
-        /* 键可能是音名（A4）也可能是 MIDI 数字 */
-        var midi = /^\d+$/.test(key) ? Number(key) : nameToMidi(key);
-        if (isNaN(midi)) continue;
-        try {
-          var raw = value.indexOf(',') >= 0 && value.indexOf('data:') === 0
-            ? value.split(',')[1] : value;
-          var bytes = base64ToBytes(raw.replace(/\s+/g, ''));
-          bank[midi] = await ac.decodeAudioData(bytes.buffer);
-        } catch (e) { /* 跳过坏样本 */ }
-      }
-      if (Object.keys(bank).length) {
-        sampleBank = bank;
-        return bank;
-      }
-      return null;
-    })();
-    return sampleLoading;
+    return typeof value === 'string' && value.length > 200
+      && /^[A-Za-z0-9+/=\s]+$/.test(value.slice(0, 200));
   }
 
   function base64ToBytes(b64) {
@@ -17616,36 +17551,65 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     return out;
   }
 
-  /* 找到离目标音最近的采样 */
+  function loadSamples() {
+    if (sampleBank || sampleLoading) return sampleLoading;
+    sampleLoading = (async function () {
+      var data = inlineSamples();
+      if (!data) {
+        var sources = ['assets/piano-samples.json', './assets/piano-samples.json'];
+        for (var i = 0; i < sources.length && !data; i++) {
+          try {
+            var res = await fetch(sources[i], { cache: 'force-cache' });
+            if (res.ok) data = await res.json();
+          } catch (e) { /* 换来源 */ }
+        }
+      }
+      if (!data) return null;
+      var ac = ctx();
+      if (!ac) return null;
+
+      var bank = {};
+      var keys = Object.keys(data);
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        var value = data[key];
+        if (!looksLikeBase64(value)) continue;
+        var midi = /^\d+$/.test(key) ? Number(key) : nameToMidi(key);
+        if (isNaN(midi)) continue;
+        try {
+          var raw = (value.indexOf('data:') === 0 && value.indexOf(',') >= 0)
+            ? value.split(',')[1] : value;
+          var bytes = base64ToBytes(raw.replace(/\s+/g, ''));
+          bank[midi] = await ac.decodeAudioData(bytes.buffer);
+        } catch (e) { /* 跳过坏样本 */ }
+      }
+      if (Object.keys(bank).length) { sampleBank = bank; return bank; }
+      return null;
+    })();
+    return sampleLoading;
+  }
+
   function nearestSample(midi) {
     if (!sampleBank) return null;
     if (sampleBank[midi]) return { buffer: sampleBank[midi], rate: 1 };
-    var keys = Object.keys(sampleBank).map(Number).sort(function (a, b) { return a - b; });
+    var keys = Object.keys(sampleBank).map(Number);
     if (!keys.length) return null;
     var best = keys[0];
-    var bestDist = Math.abs(keys[0] - midi);
+    var dist = Math.abs(best - midi);
     keys.forEach(function (k) {
       var d = Math.abs(k - midi);
-      if (d < bestDist) { best = k; bestDist = d; }
+      if (d < dist) { best = k; dist = d; }
     });
     return { buffer: sampleBank[best], rate: Math.pow(2, (midi - best) / 12) };
   }
 
-  /* 合成钢琴音：多个谐波 + 指数衰减包络 */
   function synthNote(ac, midi, when, durationSec) {
     var freq = midiToFreq(midi);
-    var gain = ac.createGain();
     var out = ac.createGain();
-    out.gain.value = 0.0;
-
-    var partials = [
-      [1, 1.00], [2, 0.42], [3, 0.24], [4, 0.14],
-      [5, 0.08], [6, 0.05], [7, 0.03], [8, 0.02],
-    ];
+    var partials = [[1, 1.0], [2, 0.42], [3, 0.24], [4, 0.14],
+                    [5, 0.08], [6, 0.05], [7, 0.03], [8, 0.02]];
+    var sum = partials.reduce(function (a, p) { return a + p[1]; }, 0);
     var sources = [];
-    var sum = 0;
-    partials.forEach(function (p) { sum += p[1]; });
-
     partials.forEach(function (p) {
       var osc = ac.createOscillator();
       osc.type = 'sine';
@@ -17658,25 +17622,19 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
       osc.stop(when + durationSec + 0.35);
       sources.push(osc);
     });
-
-    /* 钢琴式包络：极快起音 + 指数衰减 */
     var peak = 0.34;
     out.gain.setValueAtTime(0, when);
     out.gain.linearRampToValueAtTime(peak, when + 0.006);
     out.gain.exponentialRampToValueAtTime(peak * 0.30, when + 0.16);
     out.gain.exponentialRampToValueAtTime(peak * 0.010, when + durationSec + 0.30);
-    out.connect(gain);
-    gain.connect(master);
+    out.connect(master);
     return { out: out, sources: sources };
   }
 
   function noteOn(midi) {
     var ac = ctx();
-    if (!ac) return;
-    if (voices[midi]) return;          /* 同一个音不重复叠加 */
-
+    if (!ac || voices[midi]) return;
     var when = ac.currentTime;
-    var dur = 1.6;
 
     if (sampleBank) {
       var pick = nearestSample(midi);
@@ -17689,14 +17647,12 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
         src.connect(g);
         g.connect(master);
         src.start(when);
-        voices[midi] = { gain: g, sources: [src], node: g };
+        voices[midi] = { gain: g, sources: [src] };
         return;
       }
     }
-
-    /* 还没加载完采样 → 先用合成顶着，保证"点了就有声" */
-    var voice = synthNote(ac, midi, when, dur);
-    voices[midi] = { gain: voice.out, sources: voice.sources, node: voice.out };
+    var voice = synthNote(ac, midi, when, 1.8);
+    voices[midi] = { gain: voice.out, sources: voice.sources };
     if (!sampleLoading) loadSamples();
   }
 
@@ -17704,10 +17660,9 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     var voice = voices[midi];
     if (!voice) return;
     delete voices[midi];
-    var ac = audio;
-    if (!ac) return;
+    if (!audio) return;
     try {
-      var now = ac.currentTime;
+      var now = audio.currentTime;
       voice.gain.gain.cancelScheduledValues(now);
       voice.gain.gain.setValueAtTime(Math.max(voice.gain.gain.value, 0.0001), now);
       voice.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
@@ -17718,168 +17673,201 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
   }
 
   function allOff() {
-    Object.keys(voices).forEach(function (midi) { noteOff(Number(midi)); });
+    Object.keys(voices).forEach(function (m) { noteOff(Number(m)); });
   }
 
   window.p2kPiano = {
-    version: '1.0.0',
-    unlock: function () { ctx(); loadSamples(); return !!audio; },
+    version: '1.1.0',
+    unlock: function () { ctx(); loadSamples(); },
     noteOn: noteOn,
     noteOff: noteOff,
     allOff: allOff,
     ready: function () { return !!sampleBank; },
   };
 
-  /* ================================================================ 界面 */
+  /* ============================================================== 样式 */
 
   var CSS = ''
-    + '.p2k-play{position:fixed;left:0;right:0;bottom:0;z-index:99970;'
-    + 'background:linear-gradient(180deg,rgba(18,32,26,.97),rgba(12,22,18,.995));'
-    + 'border-top:1px solid rgba(255,255,255,.14);'
-    + 'padding:6px 6px calc(env(safe-area-inset-bottom) + 6px);'
-    + 'box-shadow:0 -8px 26px rgba(0,0,0,.45);display:none;user-select:none;'
-    + '-webkit-user-select:none;touch-action:none}'
-    + '.p2k-play.on{display:block}'
-    + '.p2k-play-bar{display:flex;align-items:center;gap:6px;padding:2px 4px 7px;color:#cfe3d8;font-size:12.5px}'
-    + '.p2k-play-bar button{all:unset;min-width:34px;height:30px;padding:0 10px;border-radius:9px;'
-    + 'background:rgba(255,255,255,.1);color:#eaf4ee;text-align:center;cursor:pointer;font-size:13px}'
-    + '.p2k-play-bar button:active{background:rgba(255,255,255,.22)}'
-    + '.p2k-play-bar button.on{background:#1f8a63;color:#fff}'
-    + '.p2k-play-bar .p2k-play-spacer{flex:1}'
-    + '.p2k-play-keys{position:relative;height:32vh;min-height:140px;max-height:220px;'
-    + 'overflow-x:auto;overflow-y:hidden;touch-action:pan-x}'
-    + '.p2k-play-inner{position:relative;height:100%}'
-    + '.p2k-pk{position:absolute;top:0;display:flex;align-items:flex-end;justify-content:center;'
-    + 'padding-bottom:6px;font-size:10.5px;font-weight:600;box-sizing:border-box;'
-    + 'border-radius:0 0 7px 7px;cursor:pointer;transition:background .05s}'
-    + '.p2k-pk.white{background:linear-gradient(180deg,#fbfdfb,#e6ece7);color:#3a4a43;'
-    + 'border:1px solid #a7b2aa;z-index:1}'
-    + '.p2k-pk.black{background:linear-gradient(180deg,#2c3a34,#141d19);color:#cfe3d8;'
-    + 'border:1px solid #0e1613;z-index:2}'
-    + '.p2k-pk.down{background:linear-gradient(180deg,#7fd2ab,#3aa877);color:#062017;'
-    + 'box-shadow:inset 0 -6px 14px rgba(0,0,0,.28)}'
-    + '.p2k-pk.black.down{background:linear-gradient(180deg,#3aa877,#1f8a63);color:#eafff5}'
-    + '.p2k-pk.target::after{content:"";position:absolute;inset:auto 12% 4px;height:4px;'
-    + 'border-radius:3px;background:#ffb703}'
-    + '.p2k-play-hint{position:fixed;left:10px;right:10px;bottom:calc(32vh + 52px);z-index:99969;'
-    + 'padding:8px 12px;border-radius:11px;background:rgba(24,42,34,.95);color:#eaf4ee;'
-    + 'font-size:12.5px;line-height:1.6;display:none}'
-    + '.p2k-play-hint.on{display:block}'
-    + 'body.p2k-play-open{padding-bottom:36vh}';
+    + '#p2kPure{position:fixed;inset:0;z-index:100000;display:none;'
+    + 'background:#0b1512;flex-direction:column;user-select:none;'
+    + '-webkit-user-select:none;touch-action:none;overscroll-behavior:none}'
+    + '#p2kPure.on{display:flex}'
+    + '#p2kPureTop{flex:0 0 auto;display:flex;align-items:center;gap:8px;'
+    + 'padding:calc(env(safe-area-inset-top) + 8px) 10px 8px;color:#cfe3d8;font-size:13px}'
+    + '#p2kPureTop button{all:unset;padding:7px 12px;border-radius:9px;'
+    + 'background:rgba(255,255,255,.1);color:#eaf4ee;cursor:pointer;font-size:13px;font-weight:600}'
+    + '#p2kPureTop button:active{background:rgba(255,255,255,.22)}'
+    + '#p2kPureTop .grow{flex:1}'
+    + '#p2kPureNow{min-width:52px;text-align:center;color:#7fd2ab;font-weight:700;font-size:15px}'
+    + '#p2kPureKeys{flex:1 1 auto;position:relative;overflow-x:auto;overflow-y:hidden;'
+    + 'touch-action:pan-x;padding-bottom:calc(env(safe-area-inset-bottom) + 4px)}'
+    + '#p2kPureInner{position:relative;height:100%}'
+    + '#p2kPure .pk{position:absolute;top:0;box-sizing:border-box;'
+    + 'display:flex;align-items:flex-end;justify-content:center;'
+    + 'padding-bottom:8px;font-size:11px;font-weight:600;cursor:pointer}'
+    + '#p2kPure .pk.white{background:linear-gradient(180deg,#ffffff,#e9efe9);color:#3a4a43;'
+    + 'border:1px solid #b9c3bb;border-radius:0 0 8px 8px;z-index:1}'
+    + '#p2kPure .pk.black{background:linear-gradient(180deg,#2b3833,#0d1411);color:#cfe3d8;'
+    + 'border:1px solid #050a08;border-radius:0 0 6px 6px;z-index:2}'
+    + '#p2kPure .pk.down{background:linear-gradient(180deg,#7fd2ab,#2f9a6b);color:#062017}'
+    + '#p2kPure .pk.black.down{background:linear-gradient(180deg,#3aa877,#18724f);color:#eafff5}'
+    + '#p2kPureCfg{position:fixed;left:10px;right:10px;top:calc(env(safe-area-inset-top) + 54px);'
+    + 'z-index:100001;display:none;padding:14px;border-radius:14px;'
+    + 'background:#16241f;border:1px solid rgba(255,255,255,.14);color:#eaf4ee;font-size:13.5px}'
+    + '#p2kPureCfg.on{display:block}'
+    + '#p2kPureCfg h4{margin:0 0 10px;font-size:14px;color:#7fd2ab}'
+    + '#p2kPureCfg .row{display:flex;align-items:center;gap:10px;margin:9px 0}'
+    + '#p2kPureCfg .row label{flex:0 0 56px;color:#9fb3a8}'
+    + '#p2kPureCfg .row input[type=range]{flex:1}'
+    + '#p2kPureCfg .row .val{min-width:52px;text-align:right;color:#7fd2ab;font-weight:700}'
+    + '#p2kPureCfg .presets{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}'
+    + '#p2kPureCfg .presets button{all:unset;padding:7px 12px;border-radius:9px;'
+    + 'background:rgba(255,255,255,.1);cursor:pointer;font-size:13px}'
+    + '#p2kPureCfg .presets button.on{background:#1f8a63;color:#fff}'
+    + '#p2kPureCfg .done{all:unset;display:block;margin-top:12px;padding:10px;text-align:center;'
+    + 'border-radius:10px;background:#1f8a63;color:#fff;font-weight:700;cursor:pointer}'
+    /* 纯净模式：把一切挡琴键的浮动元素都藏起来 */
+    + 'body.p2k-pure-on #p2kFab,'
+    + 'body.p2k-pure-on #p2kMenu,'
+    + 'body.p2k-pure-on #p2kPhoneSampleFab,'
+    + 'body.p2k-pure-on #p2kTourBtn,'
+    + 'body.p2k-pure-on #p2kLoadSample,'
+    + 'body.p2k-pure-on #p2kPlayHint,'
+    + 'body.p2k-pure-on #phoneCountdown,'
+    + 'body.p2k-pure-on #phonePhrase,'
+    + 'body.p2k-pure-on #p2kOmrLocalGuide,'
+    + 'body.p2k-pure-on #p2kGotoLocal,'
+    + 'body.p2k-pure-on .phone-bottom,'
+    + 'body.p2k-pure-on .phone-top,'
+    + 'body.p2k-pure-on #phoneLibrary,'
+    + 'body.p2k-pure-on #phonePreview,'
+    + 'body.p2k-pure-on #phonePractice { display:none !important }';
 
   function ensureStyle() {
-    if (document.getElementById('p2kPlayStyle')) return;
+    if ($('p2kPureStyle')) return;
     var style = document.createElement('style');
-    style.id = 'p2kPlayStyle';
+    style.id = 'p2kPureStyle';
     style.textContent = CSS;
     document.head.appendChild(style);
   }
 
-  function whiteCount() {
-    var count = 0;
-    for (var i = 0; i < state.octaves * 12; i++) {
-      if (!isSharp(state.baseMidi + i)) count++;
-    }
-    return count;
+  /* ============================================================== 建键盘 */
+
+  function range() {
+    var lo = (state.baseOctave + 1) * 12;
+    var hi = lo + Math.round(state.octaves * 12) - 1;
+    return { lo: lo, hi: hi };
+  }
+
+  function whiteKeysIn(lo, hi) {
+    var out = [];
+    for (var m = lo; m <= hi; m++) if (!isBlack(m)) out.push(m);
+    return out;
   }
 
   function layout() {
-    var inner = document.getElementById('p2kPlayInner');
-    if (!inner) return;
-    var whites = whiteCount();
-    var unit = 100 / whites;
-    var totalWhites = 0;
-    inner.replaceChildren();
+    var inner = $('p2kPureInner');
+    var host = $('p2kPureKeys');
+    if (!inner || !host) return;
 
-    for (var i = 0; i < state.octaves * 12; i++) {
-      var midi = state.baseMidi + i;
-      var sharp = isSharp(midi);
-      var key = document.createElement('div');
-      key.className = 'p2k-pk ' + (sharp ? 'black' : 'white');
-      key.setAttribute('data-midi', String(midi));
-      if (sharp) {
-        key.style.width = (unit * 0.62) + '%';
+    var r = range();
+    var whites = whiteKeysIn(r.lo, r.hi);
+    if (!whites.length) return;
+
+    var available = host.clientWidth || window.innerWidth;
+    var width = state.autoFit
+      ? Math.max(22, Math.floor(available / whites.length))
+      : state.keyWidth;
+
+    inner.replaceChildren();
+    inner.style.width = (whites.length * width) + 'px';
+    inner.style.minWidth = inner.style.width;
+
+    for (var m = r.lo; m <= r.hi; m++) {
+      var black = isBlack(m);
+      var key = document.createElement('button');
+      key.type = 'button';
+      key.className = 'pk ' + (black ? 'black' : 'white');
+      key.setAttribute('data-midi', String(m));
+
+      /* 这个音之前有几个白键 = 它所在的白键序号 */
+      var index = 0;
+      for (var i = 0; i < whites.length; i++) if (whites[i] < m) index++;
+
+      if (black) {
+        /* 黑键骑在两个白键之间 */
+        key.style.left = (index * width - width * 0.31) + 'px';
+        key.style.width = (width * 0.62) + 'px';
         key.style.height = '62%';
-        key.style.left = ((totalWhites - 0.31) * unit) + '%';
       } else {
-        key.style.width = unit + '%';
-        key.style.left = (totalWhites * unit) + '%';
-        totalWhites += 1;
-        key.textContent = ((midi % 12) === 0) ? noteName(midi) : '';
+        key.style.left = (index * width) + 'px';
+        key.style.width = width + 'px';
+        key.style.height = '100%';
+        if (m % 12 === 0) key.textContent = noteName(m);   /* 每个 C 标音名 */
       }
       inner.appendChild(key);
     }
-    inner.style.width = Math.max(whites * 52, 320) + 'px';
-    markTarget();
   }
 
-  /* 按下 / 抬起 */
-  function press(midi, el) {
-    if (el) el.classList.add('down');
-    noteOn(midi);
-    var status = $('p2kPlayNow');
-    if (status) status.textContent = noteName(midi);
-  }
+  /* ============================================================== 触摸 */
 
-  function lift(midi, el) {
-    if (el) el.classList.remove('down');
-    noteOff(midi);
-  }
+  var bound = false;
+  function bind() {
+    var host = $('p2kPureKeys');
+    if (!host || bound) return;
+    bound = true;
 
-  function keyAt(x, y) {
-    var host = $('p2kPlayKeys');
-    if (!host) return null;
-    var el = document.elementFromPoint(x, y);
-    while (el) {
-      if (el.classList && el.classList.contains('p2k-pk')) return el;
-      if (el === host) break;
-      el = el.parentElement;
+    function keyAt(x, y) {
+      var el = document.elementFromPoint(x, y);
+      while (el) {
+        if (el.classList && el.classList.contains('pk')) return el;
+        if (el === host) break;
+        el = el.parentElement;
+      }
+      return null;
     }
-    return null;
-  }
 
-  var hostBound = false;
-  function bindKeys() {
-    var host = $('p2kPlayKeys');
-    if (!host || hostBound) return;
-    hostBound = true;
+    function lift(id) {
+      var cur = state.active[id];
+      if (!cur) return;
+      cur.el.classList.remove('down');
+      noteOff(cur.midi);
+      delete state.active[id];
+    }
 
-    function handleDown(id, x, y) {
+    function down(id, x, y) {
       var key = keyAt(x, y);
       if (!key) return;
       var midi = Number(key.getAttribute('data-midi'));
       if (isNaN(midi)) return;
-      if (state.active[id]) lift(state.active[id].midi, state.active[id].el);
+      if (state.active[id]) lift(id);
       state.active[id] = { midi: midi, el: key };
-      press(midi, key);
+      key.classList.add('down');
+      noteOn(midi);
+      var now = $('p2kPureNow');
+      if (now) now.textContent = noteName(midi);
     }
 
-    function handleMove(id, x, y) {
-      var current = state.active[id];
-      if (!current) return;
+    function move(id, x, y) {
+      var cur = state.active[id];
+      if (!cur) return;
       var key = keyAt(x, y);
       if (!key) return;
       var midi = Number(key.getAttribute('data-midi'));
-      if (isNaN(midi) || midi === current.midi) return;
-      lift(current.midi, current.el);
+      if (isNaN(midi) || midi === cur.midi) return;
+      lift(id);
       state.active[id] = { midi: midi, el: key };
-      press(midi, key);
+      key.classList.add('down');
+      noteOn(midi);
+      var now = $('p2kPureNow');
+      if (now) now.textContent = noteName(midi);
     }
 
-    function handleUp(id) {
-      var current = state.active[id];
-      if (!current) return;
-      lift(current.midi, current.el);
-      delete state.active[id];
-    }
-
-    /* --- 触摸：多点同时按 --- */
     host.addEventListener('touchstart', function (event) {
-      ctx();                       /* 移动端必须在这里解锁音频 */
-      loadSamples();
+      ctx(); loadSamples();
       var list = event.changedTouches || [];
       for (var i = 0; i < list.length; i++) {
-        handleDown('t' + list[i].identifier, list[i].clientX, list[i].clientY);
+        down('t' + list[i].identifier, list[i].clientX, list[i].clientY);
       }
       event.preventDefault();
       event.stopPropagation();
@@ -17888,155 +17876,193 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     host.addEventListener('touchmove', function (event) {
       var list = event.changedTouches || [];
       for (var i = 0; i < list.length; i++) {
-        handleMove('t' + list[i].identifier, list[i].clientX, list[i].clientY);
+        move('t' + list[i].identifier, list[i].clientX, list[i].clientY);
       }
       event.preventDefault();
       event.stopPropagation();
     }, { passive: false });
 
-    function touchEnd(event) {
+    function endTouches(event) {
       var list = event.changedTouches || [];
-      for (var i = 0; i < list.length; i++) handleUp('t' + list[i].identifier);
+      for (var i = 0; i < list.length; i++) lift('t' + list[i].identifier);
       event.preventDefault();
       event.stopPropagation();
     }
-    host.addEventListener('touchend', touchEnd, { passive: false });
-    host.addEventListener('touchcancel', touchEnd, { passive: false });
+    host.addEventListener('touchend', endTouches, { passive: false });
+    host.addEventListener('touchcancel', endTouches, { passive: false });
 
-    /* --- 鼠标（电脑调试 + 触摸板） --- */
     var mouseDown = false;
     host.addEventListener('mousedown', function (event) {
       ctx();
       mouseDown = true;
-      handleDown('mouse', event.clientX, event.clientY);
+      down('mouse', event.clientX, event.clientY);
       event.preventDefault();
-      event.stopPropagation();
     });
     host.addEventListener('mousemove', function (event) {
-      if (!mouseDown) return;
-      handleMove('mouse', event.clientX, event.clientY);
+      if (mouseDown) move('mouse', event.clientX, event.clientY);
     });
     window.addEventListener('mouseup', function () {
       if (!mouseDown) return;
       mouseDown = false;
-      handleUp('mouse');
+      lift('mouse');
     });
+  }
 
-    /* 面板收起时，确保所有音都停 */
-    window.addEventListener('blur', function () {
-      allOff();
-      Object.keys(state.active).forEach(function (id) {
-        var item = state.active[id];
-        if (item && item.el) item.el.classList.remove('down');
-        delete state.active[id];
+  /* ============================================================== 面板 */
+
+  var PRESETS = [
+    { name: '1 个八度', octaves: 1 },
+    { name: '2 个八度', octaves: 2 },
+    { name: '3 个八度', octaves: 3 },
+    { name: '4 个八度', octaves: 4 },
+  ];
+
+  function syncCfg() {
+    var base = $('p2kPureBase');
+    if (base) base.value = String(state.baseOctave);
+    var baseVal = $('p2kPureBaseVal');
+    if (baseVal) baseVal.textContent = 'C' + state.baseOctave;
+
+    var width = $('p2kPureWidth');
+    if (width) width.value = String(state.keyWidth);
+    var widthVal = $('p2kPureWidthVal');
+    if (widthVal) widthVal.textContent = state.autoFit ? '自动' : (state.keyWidth + 'px');
+
+    var vol = $('p2kPureVol');
+    if (vol) vol.value = String(Math.round(state.volume * 100));
+    var volVal = $('p2kPureVolVal');
+    if (volVal) volVal.textContent = Math.round(state.volume * 100) + '%';
+
+    var host = $('p2kPurePresets');
+    if (host) {
+      [].slice.call(host.children).forEach(function (b) {
+        b.classList.toggle('on', Number(b.getAttribute('data-octaves')) === state.octaves);
       });
-    });
+    }
   }
 
-  function markTarget() {
-    var inner = $('p2kPlayInner');
-    if (!inner) return;
-    [].slice.call(inner.children).forEach(function (n) { n.classList.remove('target'); });
-    if (!state.follow) return;
-    var current = null;
-    try {
-      if (typeof phoneScore === 'object' && phoneScore) {
-        var ev = phoneScore.events && phoneScore.events[phoneIndex];
-        if (ev && ev.notes && ev.notes.length) current = ev.notes.map(function (n) { return n.m; });
-      }
-    } catch (e) { /* 忽略 */ }
-    if (!current) return;
-    current.forEach(function (midi) {
-      var node = inner.querySelector('.p2k-pk[data-midi="' + midi + '"]');
-      if (node) node.classList.add('target');
-    });
-  }
-
-  function panel() {
-    var existing = $('p2kPlay');
-    if (existing) return existing;
+  function buildPanel() {
+    if ($('p2kPure')) return;
 
     ensureStyle();
     var wrap = document.createElement('div');
-    wrap.id = 'p2kPlay';
-    wrap.className = 'p2k-play';
+    wrap.id = 'p2kPure';
     wrap.innerHTML = ''
-      + '<div class="p2k-play-bar">'
-      + '  <button type="button" id="p2kPlayMinus">−8</button>'
-      + '  <button type="button" id="p2kPlayPlus">+8</button>'
-      + '  <button type="button" id="p2kPlayFollow" class="on">跟弹</button>'
-      + '  <span class="p2k-play-spacer"></span>'
-      + '  <span id="p2kPlayNow" style="color:#7fd2ab;font-weight:700;min-width:44px;text-align:center">—</span>'
-      + '  <button type="button" id="p2kPlayClose">收起</button>'
+      + '<div id="p2kPureTop">'
+      + '  <button type="button" id="p2kPureCfgBtn">⚙ 设置</button>'
+      + '  <span class="grow"></span>'
+      + '  <span id="p2kPureNow">—</span>'
+      + '  <span class="grow"></span>'
+      + '  <button type="button" id="p2kPureExit">退出</button>'
       + '</div>'
-      + '<div class="p2k-play-keys" id="p2kPlayKeys"><div class="p2k-play-inner" id="p2kPlayInner"></div></div>';
+      + '<div id="p2kPureKeys"><div id="p2kPureInner"></div></div>'
+      + '<div id="p2kPureCfg">'
+      + '  <h4>键盘设置</h4>'
+      + '  <div class="row"><label>键数</label>'
+      + '    <div class="presets" id="p2kPurePresets"></div></div>'
+      + '  <div class="row"><label>起始音</label>'
+      + '    <input type="range" id="p2kPureBase" min="1" max="7" step="1">'
+      + '    <span class="val" id="p2kPureBaseVal"></span></div>'
+      + '  <div class="row"><label>键宽</label>'
+      + '    <input type="range" id="p2kPureWidth" min="28" max="110" step="2">'
+      + '    <span class="val" id="p2kPureWidthVal"></span></div>'
+      + '  <div class="row"><label>音量</label>'
+      + '    <input type="range" id="p2kPureVol" min="10" max="100" step="5">'
+      + '    <span class="val" id="p2kPureVolVal"></span></div>'
+      + '  <button type="button" class="done" id="p2kPureDone">完成</button>'
+      + '</div>';
     document.body.appendChild(wrap);
 
-    var hint = document.createElement('div');
-    hint.id = 'p2kPlayHint';
-    hint.className = 'p2k-play-hint';
-    hint.textContent = '按住琴键就发声，多个手指同时按可同时弹多个音。左右滑动移调，左上角 ☰ 是菜单。';
-    document.body.appendChild(hint);
+    var presetHost = $('p2kPurePresets');
+    PRESETS.forEach(function (preset) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = preset.name;
+      b.setAttribute('data-octaves', String(preset.octaves));
+      b.addEventListener('click', function () {
+        state.octaves = preset.octaves;
+        state.autoFit = true;
+        syncCfg();
+        layout();
+      });
+      presetHost.appendChild(b);
+    });
 
-    $('p2kPlayPlus').addEventListener('click', function () {
-      state.baseMidi = Math.min(84, state.baseMidi + 12);
+    $('p2kPureBase').addEventListener('input', function (event) {
+      state.baseOctave = Number(event.target.value);
+      syncCfg();
       layout();
     });
-    $('p2kPlayMinus').addEventListener('click', function () {
-      state.baseMidi = Math.max(24, state.baseMidi - 12);
+    $('p2kPureWidth').addEventListener('input', function (event) {
+      state.keyWidth = Number(event.target.value);
+      state.autoFit = false;
+      syncCfg();
       layout();
     });
-    $('p2kPlayFollow').addEventListener('click', function (event) {
-      state.follow = !state.follow;
-      event.target.classList.toggle('on', state.follow);
-      markTarget();
+    $('p2kPureVol').addEventListener('input', function (event) {
+      state.volume = Number(event.target.value) / 100;
+      if (master) master.gain.value = state.volume;
+      syncCfg();
     });
-    $('p2kPlayClose').addEventListener('click', function () { toggle(false); });
+    $('p2kPureCfgBtn').addEventListener('click', function () {
+      $('p2kPureCfg').classList.toggle('on');
+    });
+    $('p2kPureDone').addEventListener('click', function () {
+      $('p2kPureCfg').classList.remove('on');
+    });
+    $('p2kPureExit').addEventListener('click', function () { toggle(false); });
 
-    bindKeys();
-    return wrap;
+    bind();
+    syncCfg();
   }
 
   function toggle(on) {
     state.on = (on === undefined) ? !state.on : !!on;
-    var wrap = panel();
+    buildPanel();
+    var wrap = $('p2kPure');
     wrap.classList.toggle('on', state.on);
-    document.body.classList.toggle('p2k-play-open', state.on);
-    var hint = $('p2kPlayHint');
-    if (hint) hint.classList.toggle('on', state.on);
+    var cfg = $('p2kPureCfg');
+    if (cfg) cfg.classList.remove('on');
 
     if (state.on) {
-      ctx();                 /* 用户点击 = 解锁音频的最佳时机 */
+      ctx();
       loadSamples();
-      layout();
+      /* 纯净模式：把页面上的浮动按钮、提示、菜单全部藏起来，只留琴键 */
+      document.body.classList.add('p2k-pure-on');
+      requestAnimationFrame(function () { layout(); });
+      setTimeout(layout, 120);
     } else {
+      document.body.classList.remove('p2k-pure-on');
       allOff();
       Object.keys(state.active).forEach(function (id) {
-        var item = state.active[id];
-        if (item && item.el) item.el.classList.remove('down');
+        var cur = state.active[id];
+        if (cur && cur.el) cur.el.classList.remove('down');
         delete state.active[id];
       });
     }
     return state.on;
   }
 
-  setInterval(function () {
-    if (state.on && state.follow) markTarget();
-  }, 400);
+  window.addEventListener('resize', function () { if (state.on) layout(); });
+  window.addEventListener('orientationchange', function () {
+    if (state.on) setTimeout(layout, 260);
+  });
 
   window.p2kPhonePlay = {
-    version: '2.0.0',
+    version: '3.0.0',
     toggle: toggle,
     isOn: function () { return state.on; },
     setBase: function (midi) {
-      state.baseMidi = Math.max(24, Math.min(84, midi));
-      if (state.on) layout();
+      state.baseOctave = Math.max(1, Math.min(7, Math.floor(midi / 12) - 1));
+      if (state.on) { syncCfg(); layout(); }
     },
     setOctaves: function (n) {
-      state.octaves = Math.max(1, Math.min(5, n));
-      if (state.on) layout();
+      state.octaves = Math.max(1, Math.min(4, Math.round(n)));
+      state.autoFit = true;
+      if (state.on) { syncCfg(); layout(); }
     },
     unlock: function () { ctx(); loadSamples(); },
+    pureMode: true,
   };
 })();
 </script><script>/* ============================================================================
@@ -18627,6 +18653,8 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
   function attachPhoneFab() {
     if ($('p2kPhoneSampleFab')) return true;
     if (!/^(app|local)$/.test(document.body.getAttribute('data-p2k-scope') || '')) return false;
+    /* 纯净演奏模式打开时不要这个按钮 */
+    if (document.body.classList.contains('p2k-pure-on')) return false;
     var isSmall = window.matchMedia && window.matchMedia('(max-width: 820px)').matches;
     var isMobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
     if (!isSmall && !isMobile) return false;
@@ -18987,6 +19015,629 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     isApp: function () { return scope === 'app'; },
   };
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 手机纯净演奏模式（v3）
+   ----------------------------------------------------------------------------
+   用户要求（对着截图提的）：
+     · 键位要正确 —— 黑键必须骑在两个白键之间，白键等宽不被切
+     · 可以自己选「键数 / 音域」
+     · **纯净模式**：不要弹出任何浮窗、提示、菜单挡着琴键
+
+   键位算法（与页面练习模式键盘一致，已验证正确）：
+     白键等宽排列：      left = 白键序号 × 键宽
+     黑键骑在两个白键中间：left = 白键序号 × 键宽 − 键宽 × 0.31
+                          宽 = 键宽 × 0.62
+
+   音频：自包含引擎（真实采样 → 合成兜底），多点触控，不依赖页面内部函数。
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var SHARP = [1, 3, 6, 8, 10];
+  var NAME = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+  var state = {
+    on: false,
+    baseOctave: 4,        /* 起始八度：C4 = 中央 C */
+    octaves: 2,           /* 显示几个八度 */
+    autoFit: true,        /* 自动铺满屏宽 */
+    keyWidth: 52,         /* 手动键宽 */
+    volume: 0.85,
+    active: {},
+  };
+
+  function $(id) { return document.getElementById(id); }
+  function noteName(midi) { return NAME[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1); }
+  function isBlack(midi) { return SHARP.indexOf(((midi % 12) + 12) % 12) >= 0; }
+  function midiToFreq(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
+
+  /* ============================================================== 音频引擎 */
+
+  var audio = null;
+  var master = null;
+  var sampleBank = null;
+  var sampleLoading = null;
+  var voices = {};
+
+  function ctx() {
+    if (!audio) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      audio = new AC();
+      master = audio.createGain();
+      master.gain.value = state.volume;
+      master.connect(audio.destination);
+    }
+    if (audio.state === 'suspended') {
+      try { audio.resume(); } catch (e) { /* 忽略 */ }
+    }
+    return audio;
+  }
+
+  var LETTER = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  function nameToMidi(name) {
+    var m = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(String(name).trim());
+    if (!m) return NaN;
+    var base = LETTER[m[1].toUpperCase()];
+    if (base === undefined) return NaN;
+    if (m[2] === '#') base += 1;
+    else if (m[2] === 'b') base -= 1;
+    return base + (Number(m[3]) + 1) * 12;
+  }
+
+  function inlineSamples() {
+    try {
+      var node = document.getElementById('pianoSamples');
+      if (node && node.textContent && node.textContent.length > 100) {
+        var parsed = JSON.parse(node.textContent);
+        if (parsed && Object.keys(parsed).length) return parsed;
+      }
+    } catch (e) { /* 忽略 */ }
+    try {
+      var raw = window.P2K_PIANO_SAMPLES_INLINE;
+      if (raw && typeof raw === 'object' && Object.keys(raw).length) return raw;
+      if (typeof raw === 'string' && raw.length > 100) return JSON.parse(raw);
+    } catch (e) { /* 忽略 */ }
+    return null;
+  }
+
+  function looksLikeBase64(value) {
+    return typeof value === 'string' && value.length > 200
+      && /^[A-Za-z0-9+/=\s]+$/.test(value.slice(0, 200));
+  }
+
+  function base64ToBytes(b64) {
+    var bin = atob(b64);
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  function loadSamples() {
+    if (sampleBank || sampleLoading) return sampleLoading;
+    sampleLoading = (async function () {
+      var data = inlineSamples();
+      if (!data) {
+        var sources = ['assets/piano-samples.json', './assets/piano-samples.json'];
+        for (var i = 0; i < sources.length && !data; i++) {
+          try {
+            var res = await fetch(sources[i], { cache: 'force-cache' });
+            if (res.ok) data = await res.json();
+          } catch (e) { /* 换来源 */ }
+        }
+      }
+      if (!data) return null;
+      var ac = ctx();
+      if (!ac) return null;
+
+      var bank = {};
+      var keys = Object.keys(data);
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        var value = data[key];
+        if (!looksLikeBase64(value)) continue;
+        var midi = /^\d+$/.test(key) ? Number(key) : nameToMidi(key);
+        if (isNaN(midi)) continue;
+        try {
+          var raw = (value.indexOf('data:') === 0 && value.indexOf(',') >= 0)
+            ? value.split(',')[1] : value;
+          var bytes = base64ToBytes(raw.replace(/\s+/g, ''));
+          bank[midi] = await ac.decodeAudioData(bytes.buffer);
+        } catch (e) { /* 跳过坏样本 */ }
+      }
+      if (Object.keys(bank).length) { sampleBank = bank; return bank; }
+      return null;
+    })();
+    return sampleLoading;
+  }
+
+  function nearestSample(midi) {
+    if (!sampleBank) return null;
+    if (sampleBank[midi]) return { buffer: sampleBank[midi], rate: 1 };
+    var keys = Object.keys(sampleBank).map(Number);
+    if (!keys.length) return null;
+    var best = keys[0];
+    var dist = Math.abs(best - midi);
+    keys.forEach(function (k) {
+      var d = Math.abs(k - midi);
+      if (d < dist) { best = k; dist = d; }
+    });
+    return { buffer: sampleBank[best], rate: Math.pow(2, (midi - best) / 12) };
+  }
+
+  function synthNote(ac, midi, when, durationSec) {
+    var freq = midiToFreq(midi);
+    var out = ac.createGain();
+    var partials = [[1, 1.0], [2, 0.42], [3, 0.24], [4, 0.14],
+                    [5, 0.08], [6, 0.05], [7, 0.03], [8, 0.02]];
+    var sum = partials.reduce(function (a, p) { return a + p[1]; }, 0);
+    var sources = [];
+    partials.forEach(function (p) {
+      var osc = ac.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = freq * p[0];
+      var g = ac.createGain();
+      g.gain.value = p[1] / sum;
+      osc.connect(g);
+      g.connect(out);
+      osc.start(when);
+      osc.stop(when + durationSec + 0.35);
+      sources.push(osc);
+    });
+    var peak = 0.34;
+    out.gain.setValueAtTime(0, when);
+    out.gain.linearRampToValueAtTime(peak, when + 0.006);
+    out.gain.exponentialRampToValueAtTime(peak * 0.30, when + 0.16);
+    out.gain.exponentialRampToValueAtTime(peak * 0.010, when + durationSec + 0.30);
+    out.connect(master);
+    return { out: out, sources: sources };
+  }
+
+  function noteOn(midi) {
+    var ac = ctx();
+    if (!ac || voices[midi]) return;
+    var when = ac.currentTime;
+
+    if (sampleBank) {
+      var pick = nearestSample(midi);
+      if (pick) {
+        var src = ac.createBufferSource();
+        src.buffer = pick.buffer;
+        src.playbackRate.value = pick.rate;
+        var g = ac.createGain();
+        g.gain.value = 0.9;
+        src.connect(g);
+        g.connect(master);
+        src.start(when);
+        voices[midi] = { gain: g, sources: [src] };
+        return;
+      }
+    }
+    var voice = synthNote(ac, midi, when, 1.8);
+    voices[midi] = { gain: voice.out, sources: voice.sources };
+    if (!sampleLoading) loadSamples();
+  }
+
+  function noteOff(midi) {
+    var voice = voices[midi];
+    if (!voice) return;
+    delete voices[midi];
+    if (!audio) return;
+    try {
+      var now = audio.currentTime;
+      voice.gain.gain.cancelScheduledValues(now);
+      voice.gain.gain.setValueAtTime(Math.max(voice.gain.gain.value, 0.0001), now);
+      voice.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+      voice.sources.forEach(function (s) {
+        try { s.stop(now + 0.26); } catch (e) { /* 已停 */ }
+      });
+    } catch (e) { /* 忽略 */ }
+  }
+
+  function allOff() {
+    Object.keys(voices).forEach(function (m) { noteOff(Number(m)); });
+  }
+
+  window.p2kPiano = {
+    version: '1.1.0',
+    unlock: function () { ctx(); loadSamples(); },
+    noteOn: noteOn,
+    noteOff: noteOff,
+    allOff: allOff,
+    ready: function () { return !!sampleBank; },
+  };
+
+  /* ============================================================== 样式 */
+
+  var CSS = ''
+    + '#p2kPure{position:fixed;inset:0;z-index:100000;display:none;'
+    + 'background:#0b1512;flex-direction:column;user-select:none;'
+    + '-webkit-user-select:none;touch-action:none;overscroll-behavior:none}'
+    + '#p2kPure.on{display:flex}'
+    + '#p2kPureTop{flex:0 0 auto;display:flex;align-items:center;gap:8px;'
+    + 'padding:calc(env(safe-area-inset-top) + 8px) 10px 8px;color:#cfe3d8;font-size:13px}'
+    + '#p2kPureTop button{all:unset;padding:7px 12px;border-radius:9px;'
+    + 'background:rgba(255,255,255,.1);color:#eaf4ee;cursor:pointer;font-size:13px;font-weight:600}'
+    + '#p2kPureTop button:active{background:rgba(255,255,255,.22)}'
+    + '#p2kPureTop .grow{flex:1}'
+    + '#p2kPureNow{min-width:52px;text-align:center;color:#7fd2ab;font-weight:700;font-size:15px}'
+    + '#p2kPureKeys{flex:1 1 auto;position:relative;overflow-x:auto;overflow-y:hidden;'
+    + 'touch-action:pan-x;padding-bottom:calc(env(safe-area-inset-bottom) + 4px)}'
+    + '#p2kPureInner{position:relative;height:100%}'
+    + '#p2kPure .pk{position:absolute;top:0;box-sizing:border-box;'
+    + 'display:flex;align-items:flex-end;justify-content:center;'
+    + 'padding-bottom:9px;font-size:13px;font-weight:700;cursor:pointer}'
+    + '#p2kPure .pk.white{background:linear-gradient(180deg,#ffffff,#e9efe9);color:#2f3d37;'
+    + 'border:1px solid #b9c3bb;border-radius:0 0 8px 8px;z-index:1}'
+    + '#p2kPure .pk.black{background:linear-gradient(180deg,#2b3833,#0d1411);color:#cfe3d8;'
+    + 'border:1px solid #050a08;border-radius:0 0 6px 6px;z-index:2;font-size:10px}'
+    + '#p2kPure .pk.down{background:linear-gradient(180deg,#7fd2ab,#2f9a6b);color:#062017}'
+    + '#p2kPure .pk.black.down{background:linear-gradient(180deg,#3aa877,#18724f);color:#eafff5}'
+    + '#p2kPureCfg{position:fixed;left:10px;right:10px;top:calc(env(safe-area-inset-top) + 54px);'
+    + 'z-index:100001;display:none;padding:14px;border-radius:14px;'
+    + 'background:#16241f;border:1px solid rgba(255,255,255,.14);color:#eaf4ee;font-size:13.5px}'
+    + '#p2kPureCfg.on{display:block}'
+    + '#p2kPureCfg h4{margin:0 0 10px;font-size:14px;color:#7fd2ab}'
+    + '#p2kPureCfg .row{display:flex;align-items:center;gap:10px;margin:9px 0}'
+    + '#p2kPureCfg .row label{flex:0 0 56px;color:#9fb3a8}'
+    + '#p2kPureCfg .row input[type=range]{flex:1}'
+    + '#p2kPureCfg .row .val{min-width:52px;text-align:right;color:#7fd2ab;font-weight:700}'
+    + '#p2kPureCfg .presets{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}'
+    + '#p2kPureCfg .presets button{all:unset;padding:7px 12px;border-radius:9px;'
+    + 'background:rgba(255,255,255,.1);cursor:pointer;font-size:13px}'
+    + '#p2kPureCfg .presets button.on{background:#1f8a63;color:#fff}'
+    + '#p2kPureCfg .done{all:unset;display:block;margin-top:12px;padding:10px;text-align:center;'
+    + 'border-radius:10px;background:#1f8a63;color:#fff;font-weight:700;cursor:pointer}'
+    /* 纯净模式：把一切挡琴键的浮动元素都藏起来 */
+    + 'body.p2k-pure-on #p2kFab,'
+    + 'body.p2k-pure-on #p2kMenu,'
+    + 'body.p2k-pure-on #p2kPhoneSampleFab,'
+    + 'body.p2k-pure-on #p2kTourBtn,'
+    + 'body.p2k-pure-on #p2kLoadSample,'
+    + 'body.p2k-pure-on #p2kPlayHint,'
+    + 'body.p2k-pure-on #phoneCountdown,'
+    + 'body.p2k-pure-on #phonePhrase,'
+    + 'body.p2k-pure-on #p2kOmrLocalGuide,'
+    + 'body.p2k-pure-on #p2kGotoLocal,'
+    + 'body.p2k-pure-on .phone-bottom,'
+    + 'body.p2k-pure-on .phone-top,'
+    + 'body.p2k-pure-on #phoneLibrary,'
+    + 'body.p2k-pure-on #phonePreview,'
+    + 'body.p2k-pure-on #phonePractice { display:none !important }';
+
+  function ensureStyle() {
+    if ($('p2kPureStyle')) return;
+    var style = document.createElement('style');
+    style.id = 'p2kPureStyle';
+    style.textContent = CSS;
+    document.head.appendChild(style);
+  }
+
+  /* ============================================================== 建键盘 */
+
+  function range() {
+    var lo = (state.baseOctave + 1) * 12;
+    var hi = lo + Math.round(state.octaves * 12) - 1;
+    return { lo: lo, hi: hi };
+  }
+
+  function whiteKeysIn(lo, hi) {
+    var out = [];
+    for (var m = lo; m <= hi; m++) if (!isBlack(m)) out.push(m);
+    return out;
+  }
+
+  function layout() {
+    var inner = $('p2kPureInner');
+    var host = $('p2kPureKeys');
+    if (!inner || !host) return;
+
+    var r = range();
+    var whites = whiteKeysIn(r.lo, r.hi);
+    if (!whites.length) return;
+
+    var available = host.clientWidth || window.innerWidth;
+    var width = state.autoFit
+      ? Math.max(22, Math.floor(available / whites.length))
+      : state.keyWidth;
+
+    inner.replaceChildren();
+    inner.style.width = (whites.length * width) + 'px';
+    inner.style.minWidth = inner.style.width;
+
+    for (var m = r.lo; m <= r.hi; m++) {
+      var black = isBlack(m);
+      var key = document.createElement('button');
+      key.type = 'button';
+      key.className = 'pk ' + (black ? 'black' : 'white');
+      key.setAttribute('data-midi', String(m));
+
+      /* 这个音之前有几个白键 = 它所在的白键序号 */
+      var index = 0;
+      for (var i = 0; i < whites.length; i++) if (whites[i] < m) index++;
+
+      if (black) {
+        /* 黑键骑在两个白键之间；高度约 58%，更像真钢琴 */
+        key.style.left = (index * width - width * 0.31) + 'px';
+        key.style.width = (width * 0.62) + 'px';
+        key.style.height = '58%';
+      } else {
+        key.style.left = (index * width) + 'px';
+        key.style.width = width + 'px';
+        key.style.height = '100%';
+        if (m % 12 === 0) key.textContent = noteName(m);   /* 每个 C 标音名 */
+      }
+      inner.appendChild(key);
+    }
+  }
+
+  /* ============================================================== 触摸 */
+
+  var bound = false;
+  function bind() {
+    var host = $('p2kPureKeys');
+    if (!host || bound) return;
+    bound = true;
+
+    function keyAt(x, y) {
+      var el = document.elementFromPoint(x, y);
+      while (el) {
+        if (el.classList && el.classList.contains('pk')) return el;
+        if (el === host) break;
+        el = el.parentElement;
+      }
+      return null;
+    }
+
+    function lift(id) {
+      var cur = state.active[id];
+      if (!cur) return;
+      cur.el.classList.remove('down');
+      noteOff(cur.midi);
+      delete state.active[id];
+    }
+
+    function down(id, x, y) {
+      var key = keyAt(x, y);
+      if (!key) return;
+      var midi = Number(key.getAttribute('data-midi'));
+      if (isNaN(midi)) return;
+      if (state.active[id]) lift(id);
+      state.active[id] = { midi: midi, el: key };
+      key.classList.add('down');
+      noteOn(midi);
+      var now = $('p2kPureNow');
+      if (now) now.textContent = noteName(midi);
+    }
+
+    function move(id, x, y) {
+      var cur = state.active[id];
+      if (!cur) return;
+      var key = keyAt(x, y);
+      if (!key) return;
+      var midi = Number(key.getAttribute('data-midi'));
+      if (isNaN(midi) || midi === cur.midi) return;
+      lift(id);
+      state.active[id] = { midi: midi, el: key };
+      key.classList.add('down');
+      noteOn(midi);
+      var now = $('p2kPureNow');
+      if (now) now.textContent = noteName(midi);
+    }
+
+    host.addEventListener('touchstart', function (event) {
+      ctx(); loadSamples();
+      var list = event.changedTouches || [];
+      for (var i = 0; i < list.length; i++) {
+        down('t' + list[i].identifier, list[i].clientX, list[i].clientY);
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    }, { passive: false });
+
+    host.addEventListener('touchmove', function (event) {
+      var list = event.changedTouches || [];
+      for (var i = 0; i < list.length; i++) {
+        move('t' + list[i].identifier, list[i].clientX, list[i].clientY);
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    }, { passive: false });
+
+    function endTouches(event) {
+      var list = event.changedTouches || [];
+      for (var i = 0; i < list.length; i++) lift('t' + list[i].identifier);
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    host.addEventListener('touchend', endTouches, { passive: false });
+    host.addEventListener('touchcancel', endTouches, { passive: false });
+
+    var mouseDown = false;
+    host.addEventListener('mousedown', function (event) {
+      ctx();
+      mouseDown = true;
+      down('mouse', event.clientX, event.clientY);
+      event.preventDefault();
+    });
+    host.addEventListener('mousemove', function (event) {
+      if (mouseDown) move('mouse', event.clientX, event.clientY);
+    });
+    window.addEventListener('mouseup', function () {
+      if (!mouseDown) return;
+      mouseDown = false;
+      lift('mouse');
+    });
+  }
+
+  /* ============================================================== 面板 */
+
+  var PRESETS = [
+    { name: '1 个八度', octaves: 1 },
+    { name: '2 个八度', octaves: 2 },
+    { name: '3 个八度', octaves: 3 },
+    { name: '4 个八度', octaves: 4 },
+  ];
+
+  function syncCfg() {
+    var base = $('p2kPureBase');
+    if (base) base.value = String(state.baseOctave);
+    var baseVal = $('p2kPureBaseVal');
+    if (baseVal) baseVal.textContent = 'C' + state.baseOctave;
+
+    var width = $('p2kPureWidth');
+    if (width) width.value = String(state.keyWidth);
+    var widthVal = $('p2kPureWidthVal');
+    if (widthVal) widthVal.textContent = state.autoFit ? '自动' : (state.keyWidth + 'px');
+
+    var vol = $('p2kPureVol');
+    if (vol) vol.value = String(Math.round(state.volume * 100));
+    var volVal = $('p2kPureVolVal');
+    if (volVal) volVal.textContent = Math.round(state.volume * 100) + '%';
+
+    var host = $('p2kPurePresets');
+    if (host) {
+      [].slice.call(host.children).forEach(function (b) {
+        b.classList.toggle('on', Number(b.getAttribute('data-octaves')) === state.octaves);
+      });
+    }
+
+    /* 显示当前音域，用户一眼知道会看到哪些键 */
+    var rangeEl = $('p2kPureRange');
+    if (rangeEl) {
+      var r = range();
+      rangeEl.textContent = noteName(r.lo) + ' ～ ' + noteName(r.hi);
+    }
+  }
+
+  function buildPanel() {
+    if ($('p2kPure')) return;
+
+    ensureStyle();
+    var wrap = document.createElement('div');
+    wrap.id = 'p2kPure';
+    wrap.innerHTML = ''
+      + '<div id="p2kPureTop">'
+      + '  <button type="button" id="p2kPureCfgBtn">⚙ 设置</button>'
+      + '  <span class="grow"></span>'
+      + '  <span id="p2kPureNow">—</span>'
+      + '  <span class="grow"></span>'
+      + '  <button type="button" id="p2kPureExit">退出</button>'
+      + '</div>'
+      + '<div id="p2kPureKeys"><div id="p2kPureInner"></div></div>'
+      + '<div id="p2kPureCfg">'
+      + '  <h4>键盘设置</h4>'
+      + '  <div class="row"><label>键数</label>'
+      + '    <div class="presets" id="p2kPurePresets"></div></div>'
+      + '  <div class="row"><label>音域</label>'
+      + '    <span id="p2kPureRange" style="color:#7fd2ab;font-weight:700"></span></div>'
+      + '  <div class="row"><label>起始音</label>'
+      + '    <input type="range" id="p2kPureBase" min="1" max="7" step="1">'
+      + '    <span class="val" id="p2kPureBaseVal"></span></div>'
+      + '  <div class="row"><label>键宽</label>'
+      + '    <input type="range" id="p2kPureWidth" min="28" max="110" step="2">'
+      + '    <span class="val" id="p2kPureWidthVal"></span></div>'
+      + '  <div class="row"><label>音量</label>'
+      + '    <input type="range" id="p2kPureVol" min="10" max="100" step="5">'
+      + '    <span class="val" id="p2kPureVolVal"></span></div>'
+      + '  <button type="button" class="done" id="p2kPureDone">完成</button>'
+      + '</div>';
+    document.body.appendChild(wrap);
+
+    var presetHost = $('p2kPurePresets');
+    PRESETS.forEach(function (preset) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = preset.name;
+      b.setAttribute('data-octaves', String(preset.octaves));
+      b.addEventListener('click', function () {
+        state.octaves = preset.octaves;
+        state.autoFit = true;
+        syncCfg();
+        layout();
+      });
+      presetHost.appendChild(b);
+    });
+
+    $('p2kPureBase').addEventListener('input', function (event) {
+      state.baseOctave = Number(event.target.value);
+      syncCfg();
+      layout();
+    });
+    $('p2kPureWidth').addEventListener('input', function (event) {
+      state.keyWidth = Number(event.target.value);
+      state.autoFit = false;
+      syncCfg();
+      layout();
+    });
+    $('p2kPureVol').addEventListener('input', function (event) {
+      state.volume = Number(event.target.value) / 100;
+      if (master) master.gain.value = state.volume;
+      syncCfg();
+    });
+    $('p2kPureCfgBtn').addEventListener('click', function () {
+      $('p2kPureCfg').classList.toggle('on');
+    });
+    $('p2kPureDone').addEventListener('click', function () {
+      $('p2kPureCfg').classList.remove('on');
+    });
+    $('p2kPureExit').addEventListener('click', function () { toggle(false); });
+
+    bind();
+    syncCfg();
+  }
+
+  function toggle(on) {
+    state.on = (on === undefined) ? !state.on : !!on;
+    buildPanel();
+    var wrap = $('p2kPure');
+    wrap.classList.toggle('on', state.on);
+    var cfg = $('p2kPureCfg');
+    if (cfg) cfg.classList.remove('on');
+
+    if (state.on) {
+      ctx();
+      loadSamples();
+      /* 纯净模式：把页面上的浮动按钮、提示、菜单全部藏起来，只留琴键 */
+      document.body.classList.add('p2k-pure-on');
+      requestAnimationFrame(function () { layout(); });
+      setTimeout(layout, 120);
+    } else {
+      document.body.classList.remove('p2k-pure-on');
+      allOff();
+      Object.keys(state.active).forEach(function (id) {
+        var cur = state.active[id];
+        if (cur && cur.el) cur.el.classList.remove('down');
+        delete state.active[id];
+      });
+    }
+    return state.on;
+  }
+
+  window.addEventListener('resize', function () { if (state.on) layout(); });
+  window.addEventListener('orientationchange', function () {
+    if (state.on) setTimeout(layout, 260);
+  });
+
+  window.p2kPhonePlay = {
+    version: '3.0.0',
+    toggle: toggle,
+    isOn: function () { return state.on; },
+    setBase: function (midi) {
+      state.baseOctave = Math.max(1, Math.min(7, Math.floor(midi / 12) - 1));
+      if (state.on) { syncCfg(); layout(); }
+    },
+    setOctaves: function (n) {
+      state.octaves = Math.max(1, Math.min(4, Math.round(n)));
+      state.autoFit = true;
+      if (state.on) { syncCfg(); layout(); }
+    },
+    unlock: function () { ctx(); loadSamples(); },
+    pureMode: true,
+  };
+})();
+
 </script></body></html>
 
 
