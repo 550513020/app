@@ -17536,11 +17536,22 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     return base + (Number(m[3]) + 1) * 12;
   }
 
-  /* 采样来源：先页面内嵌（APK 离线场景），再静态文件 */
+  /* 采样来源：先页面内嵌（APK/file:// 离线场景），再静态文件。
+     页面把采样放在 <script type="application/json" id="pianoSamples"> 里。 */
   function inlineSamples() {
+    /* 1) 页面自己的 JSON 数据块 */
+    try {
+      var node = document.getElementById('pianoSamples');
+      if (node && node.textContent && node.textContent.length > 100) {
+        var parsed = JSON.parse(node.textContent);
+        if (parsed && Object.keys(parsed).length) return parsed;
+      }
+    } catch (e) { /* 忽略 */ }
+    /* 2) 兜底：某些版本会挂到 window */
     try {
       var raw = window.P2K_PIANO_SAMPLES_INLINE;
-      if (raw) return typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (raw && typeof raw === 'object' && Object.keys(raw).length) return raw;
+      if (typeof raw === 'string' && raw.length > 100) return JSON.parse(raw);
     } catch (e) { /* 忽略 */ }
     return null;
   }
