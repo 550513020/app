@@ -20034,6 +20034,7 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
 
 
+
 <script>
 /* ==== 可靠的 PDF 导入处理器 ====
    页面原有的 $('file').onchange 在多次重建中丢失，导致「导入 PDF 曲谱」没反应。
@@ -20090,28 +20091,40 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
         var lib = pickPdfModule();
         if (lib) return lib;
 
-        /* 0) 在线页把 pdfLib / pdfWorker 外置了，先等数据灌回占位块。
-              否则 P2K_LOAD_PDFJS 会因为读不到内嵌数据而失败。 */
+        /* 首选：直接 import 站点上的 pdf.js 模块文件。
+           在线页把它放在 ./assets/pdfjs/ 下，公网与本地都能直接取到，
+           比走「base64 数据块」快得多，也不受数据外置影响。 */
         try {
-            if (typeof window.P2K_ENSURE_DATA === 'function') {
-                onProgress('正在准备 PDF 引擎数据…');
-                await window.P2K_ENSURE_DATA('pdfLib');
-                await window.P2K_ENSURE_DATA('pdfWorker');
+            onProgress('正在加载 PDF 引擎…');
+            var mod = await import('./assets/pdfjs/pdf.min.mjs');
+            var real = (mod && mod.getDocument) ? mod : (mod && mod.default);
+            if (real && real.getDocument) {
+                try {
+                    real.GlobalWorkerOptions.workerSrc =
+                        new URL('./assets/pdfjs/pdf.worker.min.mjs', location.href).href;
+                } catch (error) { /* 忽略 */ }
+                loadedPdfLib = real;
+                return real;
             }
-        } catch (error) { /* 忽略，继续 */ }
+        } catch (error) { /* 站点没有这个文件，继续走页面加载器 */ }
 
-        /* 首选：页面自己的加载器（公网 / 本机都适用） */
+        /* 次选：页面自己的加载器 */
         var pending = loadViaPage();
         if (pending) {
-            onProgress('正在加载 PDF 引擎…');
             try {
                 lib = await pending;
                 if (lib && lib.getDocument) return lib;
             } catch (error) { /* 继续兜底 */ }
         }
 
-        /* 兜底：内嵌数据块里的 pdf.js（离线页用） */
+        /* 兜底：等页面把外置数据灌回占位块后，用内嵌方式挂载 */
         try {
+            if (typeof window.P2K_ENSURE_DATA === 'function') {
+                await Promise.race([
+                    window.P2K_ENSURE_DATA('pdfLib'),
+                    new Promise(function (done) { setTimeout(done, 8000); }),
+                ]);
+            }
             var inlineLib = typeof window.P2K_READ_INLINE === 'function'
                 ? window.P2K_READ_INLINE('pdfLib') : '';
             var inlineWorker = typeof window.P2K_READ_INLINE === 'function'
@@ -20123,7 +20136,7 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
             }
         } catch (error) { /* 继续等 */ }
 
-        return await waitPdfModule(15000);
+        return await waitPdfModule(10000);
     }
 
     var pdfDoc = null;
