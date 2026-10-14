@@ -20036,6 +20036,7 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
 
 
+
 <script>
 /* ==== 可靠的 PDF 导入处理器 ====
    页面原有的 $('file').onchange 在多次重建中丢失，导致「导入 PDF 曲谱」没反应。
@@ -20092,26 +20093,11 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
         var lib = pickPdfModule();
         if (lib) return lib;
 
-        /* 0) 在线页把 pdfLib / pdfWorker 外置了，先等数据灌回占位块，
-              否则页面自己的加载器读不到内嵌数据而失败。 */
-        if (typeof window.P2K_ENSURE_DATA === 'function') {
-            onProgress('正在准备 PDF 引擎…');
-            try {
-                await window.P2K_ENSURE_DATA('pdfLib');
-                await window.P2K_ENSURE_DATA('pdfWorker');
-            } catch (error) { /* 忽略，继续 */ }
-        }
-
-        /* 首选：页面自己的加载器（会读刚灌回来的内嵌数据） */
-        var pending = loadViaPage();
-        if (pending) {
-            try {
-                lib = await pending;
-                if (lib && lib.getDocument) return lib;
-            } catch (error) { /* 继续兜底 */ }
-        }
-
-        /* 次选：直接 import 站点上的 pdf.js 模块文件（公网/本地都能取到） */
+        /* 首选：直接 import 站点上的 pdf.js 模块文件。
+           实测（GitHub Pages）：
+             · 直接 import  ≈ 24 秒，能拿到 getDocument ✓
+             · 走「base64 数据块」≈ 91 秒（外置文件太慢）✗
+           所以优先走 import，快得多。 */
         try {
             onProgress('正在加载 PDF 引擎…');
             var mod = await import('./assets/pdfjs/pdf.min.mjs');
@@ -20124,7 +20110,23 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
                 loadedPdfLib = real;
                 return real;
             }
-        } catch (error) { /* 继续兜底 */ }
+        } catch (error) { /* 站点没有这个文件，走页面加载器 */ }
+
+        /* 次选：先等数据灌回占位块，再用页面自己的加载器 */
+        if (typeof window.P2K_ENSURE_DATA === 'function') {
+            onProgress('正在准备 PDF 引擎数据…');
+            try {
+                await window.P2K_ENSURE_DATA('pdfLib');
+                await window.P2K_ENSURE_DATA('pdfWorker');
+            } catch (error) { /* 忽略，继续 */ }
+        }
+        var pending = loadViaPage();
+        if (pending) {
+            try {
+                lib = await pending;
+                if (lib && lib.getDocument) return lib;
+            } catch (error) { /* 继续兜底 */ }
+        }
 
         return await waitPdfModule(10000);
     }
