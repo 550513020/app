@@ -20033,6 +20033,7 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 </script>
 
 
+
 <script>
 /* ==== 可靠的 PDF 导入处理器 ====
    页面原有的 $('file').onchange 在多次重建中丢失，导致「导入 PDF 曲谱」没反应。
@@ -20088,6 +20089,16 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     async function ensurePdfModule(onProgress) {
         var lib = pickPdfModule();
         if (lib) return lib;
+
+        /* 0) 在线页把 pdfLib / pdfWorker 外置了，先等数据灌回占位块。
+              否则 P2K_LOAD_PDFJS 会因为读不到内嵌数据而失败。 */
+        try {
+            if (typeof window.P2K_ENSURE_DATA === 'function') {
+                onProgress('正在准备 PDF 引擎数据…');
+                await window.P2K_ENSURE_DATA('pdfLib');
+                await window.P2K_ENSURE_DATA('pdfWorker');
+            }
+        } catch (error) { /* 忽略，继续 */ }
 
         /* 首选：页面自己的加载器（公网 / 本机都适用） */
         var pending = loadViaPage();
