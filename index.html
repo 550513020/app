@@ -20030,7 +20030,9 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     active: () => !!window.__p2kLocalAccountMode,
   };
 })();
-</script><script>
+</script>
+
+<script>
 /* ==== 可靠的 PDF 导入处理器 ====
    页面原有的 $('file').onchange 在多次重建中丢失，导致「导入 PDF 曲谱」没反应。
    这里补一个独立、自包含的实现，不依赖页面里的任何私有变量。 */
@@ -20046,10 +20048,70 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
     function pickPdfModule() {
         /* pdf.js 在页面里有多种暴露方式，逐个试 */
-        if (window.pdfjsLib) return window.pdfjsLib;
-        if (window.PDFLib) return window.PDFLib;
-        if (window.pdfLib) return window.pdfLib;
+        if (loadedPdfLib && loadedPdfLib.getDocument) return loadedPdfLib;
+        if (window.pdfjsLib && window.pdfjsLib.getDocument) return window.pdfjsLib;
+        if (window.PDFLib && window.PDFLib.getDocument) return window.PDFLib;
+        if (window.pdfLib && window.pdfLib.getDocument) return window.pdfLib;
         return null;
+    }
+
+    /* 页面自己有个加载器 P2K_LOAD_PDFJS()：
+       公网页面上它从 ./assets/pdfjs/pdf.min.mjs 动态 import，
+       但**不会**把结果挂到 window.pdfjsLib —— 所以必须直接调它。 */
+    var loadedPdfLib = null;
+    var pdfLibPromise = null;
+
+    function loadViaPage() {
+        if (typeof window.P2K_LOAD_PDFJS !== 'function') return null;
+        if (!pdfLibPromise) {
+            pdfLibPromise = window.P2K_LOAD_PDFJS().then(function (lib) {
+                if (lib && lib.getDocument) loadedPdfLib = lib;
+                return lib;
+            }).catch(function () { return null; });
+        }
+        return pdfLibPromise;
+    }
+
+    /* 等 pdf.js 就绪：公网是异步加载，选完文件可能还没好 */
+    async function waitPdfModule(timeoutMs) {
+        var limit = timeoutMs || 20000;
+        var started = Date.now();
+        for (;;) {
+            var lib = pickPdfModule();
+            if (lib) return lib;
+            if (Date.now() - started > limit) return null;
+            await new Promise(function (done) { setTimeout(done, 300); });
+        }
+    }
+
+    async function ensurePdfModule(onProgress) {
+        var lib = pickPdfModule();
+        if (lib) return lib;
+
+        /* 首选：页面自己的加载器（公网 / 本机都适用） */
+        var pending = loadViaPage();
+        if (pending) {
+            onProgress('正在加载 PDF 引擎…');
+            try {
+                lib = await pending;
+                if (lib && lib.getDocument) return lib;
+            } catch (error) { /* 继续兜底 */ }
+        }
+
+        /* 兜底：内嵌数据块里的 pdf.js（离线页用） */
+        try {
+            var inlineLib = typeof window.P2K_READ_INLINE === 'function'
+                ? window.P2K_READ_INLINE('pdfLib') : '';
+            var inlineWorker = typeof window.P2K_READ_INLINE === 'function'
+                ? window.P2K_READ_INLINE('pdfWorker') : '';
+            if (inlineLib && typeof window.P2K_MOUNT_INLINE_PDFJS === 'function') {
+                onProgress('正在加载 PDF 引擎（内置）…');
+                lib = await window.P2K_MOUNT_INLINE_PDFJS(inlineLib, inlineWorker);
+                if (lib && lib.getDocument) { loadedPdfLib = lib; return lib; }
+            }
+        } catch (error) { /* 继续等 */ }
+
+        return await waitPdfModule(15000);
     }
 
     var pdfDoc = null;
@@ -20092,9 +20154,9 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
             pdfBytes = new Uint8Array(buffer);
             window.pdfBytes = pdfBytes;
 
-            var lib = pickPdfModule();
+            var lib = await ensurePdfModule(say);
             if (!lib || !lib.getDocument) {
-                say('PDF 已选择（' + Math.round(pdfBytes.length / 1024) + ' KB），但 pdf.js 尚未就绪，请稍后再试。');
+                say('PDF 已选择（' + Math.round(pdfBytes.length / 1024) + ' KB），但 PDF 引擎没能就绪，请刷新页面重试。');
                 return;
             }
 
