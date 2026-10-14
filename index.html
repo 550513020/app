@@ -20030,6 +20030,134 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     active: () => !!window.__p2kLocalAccountMode,
   };
 })();
-</script></body></html>
+</script><script>
+/* ==== 可靠的 PDF 导入处理器 ====
+   页面原有的 $('file').onchange 在多次重建中丢失，导致「导入 PDF 曲谱」没反应。
+   这里补一个独立、自包含的实现，不依赖页面里的任何私有变量。 */
+(function () {
+    'use strict';
+
+    function byId(id) { return document.getElementById(id); }
+
+    function say(text) {
+        var el = byId('status');
+        if (el) el.textContent = String(text == null ? '' : text);
+    }
+
+    function pickPdfModule() {
+        /* pdf.js 在页面里有多种暴露方式，逐个试 */
+        if (window.pdfjsLib) return window.pdfjsLib;
+        if (window.PDFLib) return window.PDFLib;
+        if (window.pdfLib) return window.pdfLib;
+        return null;
+    }
+
+    var pdfDoc = null;
+    var pdfBytes = null;
+    var pageNum = 1;
+
+    async function renderPage(num) {
+        if (!pdfDoc) return;
+        var canvas = byId('score');
+        if (!canvas) return;
+        var page = await pdfDoc.getPage(num);
+        var viewport = page.getViewport({ scale: 1.6 });
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvas.style.width = '100%';
+        canvas.style.height = 'auto';
+        var context = canvas.getContext('2d');
+        await page.render({ canvasContext: context, viewport: viewport }).promise;
+    }
+
+    function fillPageSelect(count) {
+        var select = byId('page');
+        if (!select) return;
+        select.replaceChildren();
+        for (var i = 1; i <= count; i++) {
+            var option = document.createElement('option');
+            option.value = String(i);
+            option.textContent = String(i);
+            select.appendChild(option);
+        }
+        select.value = '1';
+        select.disabled = false;
+    }
+
+    async function handleFile(file) {
+        if (!file) return;
+        say('正在读取曲谱…');
+        try {
+            var buffer = await file.arrayBuffer();
+            pdfBytes = new Uint8Array(buffer);
+            window.pdfBytes = pdfBytes;
+
+            var lib = pickPdfModule();
+            if (!lib || !lib.getDocument) {
+                say('PDF 已选择（' + Math.round(pdfBytes.length / 1024) + ' KB），但 pdf.js 尚未就绪，请稍后再试。');
+                return;
+            }
+
+            pdfDoc = await lib.getDocument({ data: pdfBytes.slice(), isEvalSupported: false }).promise;
+            window.pdf = pdfDoc;
+
+            var nameEl = byId('filename');
+            if (nameEl) nameEl.textContent = file.name;
+            var sourceEl = byId('source');
+            if (sourceEl) sourceEl.textContent = pdfDoc.numPages + ' 页 · PDF 在本机浏览器中打开';
+
+            fillPageSelect(pdfDoc.numPages);
+            var select = byId('page');
+            if (select) {
+                select.onchange = function () {
+                    pageNum = Number(select.value) || 1;
+                    renderPage(pageNum);
+                };
+            }
+
+            await renderPage(1);
+
+            var recognize = byId('recognize');
+            if (recognize) recognize.disabled = false;
+
+            say('第 1 页已打开。');
+        } catch (error) {
+            say('PDF 打开失败：' + (error && error.message ? error.message : error));
+        }
+    }
+
+    function bind() {
+        var input = byId('file');
+        if (!input) return false;
+        if (input.__p2kReliableBound) return true;
+        input.__p2kReliableBound = true;
+
+        /* 用 addEventListener 而不是 onchange，避免覆盖/被覆盖 */
+        input.addEventListener('change', function () {
+            var file = input.files && input.files[0];
+            handleFile(file).finally(function () {
+                /* 留空以便同一个文件能再选一次 */
+                try { input.value = ''; } catch (e) { /* 忽略 */ }
+            });
+        }, false);
+
+        say('导入 PDF 后开始。');
+        return true;
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bind, { once: true });
+    } else {
+        bind();
+    }
+    /* 再补几次：元素可能是后渲染出来的 */
+    var tries = 0;
+    var timer = setInterval(function () {
+        tries += 1;
+        if (bind() || tries > 40) clearInterval(timer);
+    }, 400);
+})();
+</script>
+</body></html>
 
 
