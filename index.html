@@ -20032,6 +20032,7 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 })();
 </script>
 
+
 <script>
 /* ==== 可靠的 PDF 导入处理器 ====
    页面原有的 $('file').onchange 在多次重建中丢失，导致「导入 PDF 曲谱」没反应。
@@ -20191,6 +20192,10 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     function bind() {
         var input = byId('file');
         if (!input) return false;
+
+        /* 页面一就绪就预加载 pdf.js（公网是异步 import，提前加载省得选完文件还要等） */
+        try { loadViaPage(); } catch (error) { /* 忽略 */ }
+
         if (input.__p2kReliableBound) return true;
         input.__p2kReliableBound = true;
 
