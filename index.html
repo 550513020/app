@@ -21063,6 +21063,109 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   window.p2kEnhance = { pushToRepo: pushToRepo, rebuildOctaveButtons: rebuildOctaveButtons };
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 工坊共用网页账号
+   ----------------------------------------------------------------------------
+   原来工坊有自己一套账号（/api/account/*），要单独登录一次。
+   这里把它改成直接用网页登录的账号（/api/auth/login 拿到的 token），
+   并隐藏工坊里的账号面板。
+   ========================================================================== */
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+
+  function sharedToken() {
+    try { return localStorage.getItem('p2k-account-token-v2') || ''; } catch (e) { return ''; }
+  }
+
+  /* 隐藏工坊里的账号输入与登录按钮（保留只读的「当前账号」那一行） */
+  function hideStudioAccount() {
+    ['p2kStudioUser', 'p2kStudioPass', 'p2kStudioRegisterBtn', 'p2kStudioLoginBtn',
+     'p2kStudioLogoutBtn', 'p2kStudioAccountOut'].forEach(function (id) {
+      var el = $(id);
+      if (!el) return;
+      var row = el.closest ? (el.closest('.p2k-studio-row') || el) : el;
+      if (row && row.style) row.style.display = 'none';
+      if (el.style) el.style.display = 'none';
+    });
+
+    // 账号标签按钮
+    var tabs = document.querySelectorAll('[data-tab="account"], [data-panel="account"]');
+    [].slice.call(tabs).forEach(function (node) {
+      if (node.style) node.style.display = 'none';
+    });
+
+    // 说明文字里提到"注册"的那段也收起来（但不动 p2kStudioWho）
+    var hints = document.querySelectorAll('.p2k-studio-panel [class*="tiny"]');
+    [].slice.call(hints).forEach(function (node) {
+      if (node.id === 'p2kStudioWho') return;
+      var text = node.textContent || '';
+      if (text.indexOf('注册') >= 0 && text.indexOf('账号') >= 0) {
+        if (node.style) node.style.display = 'none';
+      }
+    });
+  }
+
+  /* 把工坊的 token 换成网页账号的 token */
+  function shareToken() {
+    var token = sharedToken();
+    if (!token) return;
+    try {
+      // 工坊内部把 token 存在 state 里；这里通过它的公开句柄赋值
+      if (window.p2kStudio && typeof window.p2kStudio === 'object') {
+        if ('token' in window.p2kStudio) window.p2kStudio.token = token;
+        if ('state' in window.p2kStudio && window.p2kStudio.state) {
+          window.p2kStudio.state.token = token;
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+    // 兜底：写一份常见键名
+    try {
+      if (!localStorage.getItem('p2k-studio-token')) {
+        localStorage.setItem('p2k-studio-token', token);
+      } else {
+        localStorage.setItem('p2k-studio-token', token);
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /* 显示当前账号（只读一行，不再让用户登录） */
+  function showWho() {
+    var token = sharedToken();
+    var user = '';
+    try {
+      user = (JSON.parse(localStorage.getItem('p2k-account-user-v2') || '{}').username) || '';
+    } catch (e) { user = ''; }
+    var who = $('p2kStudioWho');
+    if (who) {
+      who.style.display = '';
+      who.textContent = (token && user)
+        ? ('已使用网页账号：' + user + '（工坊无需再登录）')
+        : '未登录：请先用页面顶部的「用户名登录 / 同步」登录，工坊会自动共用。';
+    }
+  }
+
+  function boot() {
+    hideStudioAccount();
+    shareToken();
+    showWho();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    boot();
+    if (tries > 300) clearInterval(timer);
+  }, 800);
+
+  window.p2kStudioSharedAccount = { boot: boot, token: sharedToken };
+})();
 </script></body></html>
 
 
