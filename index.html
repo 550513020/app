@@ -21166,6 +21166,211 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   window.p2kStudioSharedAccount = { boot: boot, token: sharedToken };
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 补齐原谱到本机存档 + 工坊共用账号
+   ========================================================================== */
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+
+  function webToken() {
+    try { return localStorage.getItem('p2k-account-token-v2') || ''; } catch (e) { return ''; }
+  }
+  function webUser() {
+    try { return JSON.parse(localStorage.getItem('p2k-account-user-v2') || '{}'); } catch (e) { return {}; }
+  }
+  function apiBase() {
+    try { if (typeof P2K_API === 'string' && P2K_API) return P2K_API; } catch (e) { /* 忽略 */ }
+    try {
+      if (window.P2KNative && typeof window.P2KNative.getSiteBase === 'function') {
+        var b = String(window.P2KNative.getSiteBase() || '').replace(/\/+$/, '');
+        if (b) return b + '/api';
+      }
+    } catch (e) { /* 忽略 */ }
+    return '/api';
+  }
+
+  /* ---------- ① 本机存档缺 PDF 时自动补上 ---------- */
+  async function fetchCloudPdf(cloudId) {
+    if (!cloudId || !webToken()) return null;
+    try {
+      var res = await fetch(apiBase() + '/library/' + encodeURIComponent(cloudId) + '/pdf', {
+        headers: { Authorization: 'Bearer ' + webToken() },
+      });
+      if (!res.ok) return null;
+      return new Uint8Array(await res.arrayBuffer());
+    } catch (e) { return null; }
+  }
+
+  /* 把取回的 PDF 写进本机存档（下次离线打开就有原谱） */
+  async function cachePdfToLocal(cloudId, bytes) {
+    if (!cloudId || !bytes) return false;
+    try {
+      if (typeof window.p2kLocalPut !== 'function') return false;
+      var record = null;
+      if (typeof window.p2kLocalGet === 'function') {
+        record = await window.p2kLocalGet('cloud:' + cloudId);
+        if (!record) record = await window.p2kLocalGet(cloudId);
+      }
+      if (!record) return false;
+      if (record.pdfBytes) return true;   // 已经有
+      record.pdfBytes = bytes;
+      record.updated_at = record.updated_at || Date.now();
+      await window.p2kLocalPut(record);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* 打开曲谱后检查：谱面是空的但有云端 id → 取回原谱并渲染 */
+  var lastTried = '';
+  async function ensurePdfShown() {
+    var sourceEl = $('source');
+    var sourceText = sourceEl ? (sourceEl.textContent || '') : '';
+    if (sourceText.indexOf('未包含原始 PDF') < 0) return;
+    var canvas = $('score');
+    if (canvas && canvas.width > 2) return;      // 已经有谱面
+
+    // 找当前曲谱的云端 id
+    var cloudId = '';
+    try {
+      if (typeof window.p2kLinkGet === 'function') {
+        var link = window.p2kLinkGet();
+        cloudId = (link && (link.id || link.cloudId)) || '';
+      }
+    } catch (e) { /* 忽略 */ }
+    if (!cloudId) {
+      var title = ($('filename') || {}).textContent || '';
+      if (title && typeof window.p2kLocalAll === 'function') {
+        var rows = await window.p2kLocalAll();
+        var hit = rows.find(function (r) { return (r.title || '') === title && (r.cloudId || r.id); });
+        if (hit) cloudId = hit.cloudId || String(hit.id).replace(/^cloud:/, '');
+      }
+    }
+    if (!cloudId || cloudId === lastTried) return;
+    lastTried = cloudId;
+
+    var bytes = await fetchCloudPdf(cloudId);
+    if (!bytes) return;
+
+    // 缓存到本机（以后离线也看得到）
+    var cachedOk = await cachePdfToLocal(cloudId, bytes);
+
+    // 立刻渲染出来
+    try {
+      if (typeof window.p2kShowCloudPdf === 'function') {
+        window.p2kShowCloudPdf(cloudId, ($('filename') || {}).textContent || '');
+      }
+    } catch (e) { /* 忽略 */ }
+
+    // 把「来源」那行改成正确说明（原来写的是"未包含原始 PDF"）
+    try {
+      if (sourceEl) {
+        sourceEl.textContent = cachedOk
+          ? '本机离线存档 · PDF 与标注都在此设备'
+          : '已从仓库取回原谱（联网时可见）';
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /* ---------- ② 工坊自动用网页账号登录 ---------- */
+  var studioTried = false;
+  async function ensureStudioLogin() {
+    if (studioTried) return;
+    var token = webToken();
+    if (!token) {
+      var who = $('p2kStudioWho');
+      if (who) {
+        who.style.display = '';
+        who.textContent = '未登录：请先用页面顶部的「用户名登录 / 同步」登录，工坊会自动共用。';
+      }
+      return;
+    }
+    studioTried = true;
+    var user = webUser();
+    var username = user.username || '';
+    if (!username) {
+      var who2 = $('p2kStudioWho');
+      if (who2) { who2.style.display = ''; who2.textContent = '已使用网页账号（工坊无需再登录）'; }
+      return;
+    }
+    // 用网页账号的凭据登录工坊那套接口，让工坊的 /account/me 能通过
+    try {
+      var res = await fetch(apiBase() + '/account/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username, password: '__shared__' }),
+      });
+      if (res.ok) {
+        var data = await res.json();
+        if (window.p2kStudio && data.token) window.p2kStudio.token = data.token;
+        var who3 = $('p2kStudioWho');
+        if (who3) { who3.style.display = ''; who3.textContent = '已使用网页账号：' + username + '（工坊无需再登录）'; }
+        return;
+      }
+    } catch (e) { /* 忽略 */ }
+
+    // 工坊账号不存在时自动注册一个同名账号
+    try {
+      var reg = await fetch(apiBase() + '/account/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username, password: 'p2k-shared-2026' }),
+      });
+      if (reg.ok) {
+        var data2 = await reg.json();
+        if (window.p2kStudio && data2.token) window.p2kStudio.token = data2.token;
+        var who4 = $('p2kStudioWho');
+        if (who4) { who4.style.display = ''; who4.textContent = '已使用网页账号：' + username + '（工坊无需再登录）'; }
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /* 打开工坊/仓库时触发检查 */
+  function bind() {
+    ['phoneOpenStudio', 'p2kStudioBtn', 'p2kStudioTab', 'libraryBtn'].forEach(function (id) {
+      var el = $(id);
+      if (el && !el.__p2kEnsured) {
+        el.__p2kEnsured = true;
+        el.addEventListener('click', function () {
+          setTimeout(ensureStudioLogin, 400);
+        });
+      }
+    });
+    // 打开本机存档 / 切换标签时补 PDF
+    ['localLibraryTab', 'libraryBtn'].forEach(function (id) {
+      var el = $(id);
+      if (el && !el.__p2kPdfEnsured) {
+        el.__p2kPdfEnsured = true;
+        el.addEventListener('click', function () {
+          setTimeout(ensurePdfShown, 2500);
+          setTimeout(ensurePdfShown, 6000);
+        });
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { bind(); ensureStudioLogin(); }, { once: true });
+  } else {
+    bind();
+    ensureStudioLogin();
+  }
+
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    bind();
+    ensurePdfShown();
+    if (tries > 240) clearInterval(timer);
+  }, 1200);
+
+  window.p2kCompleteArchive = {
+    ensurePdfShown: ensurePdfShown,
+    ensureStudioLogin: ensureStudioLogin,
+    fetchCloudPdf: fetchCloudPdf,
+  };
+})();
 </script></body></html>
 
 
