@@ -22112,6 +22112,199 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   window.p2kSelfHostedPdf = { open: openByTitle, manifest: loadManifest };
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 识谱后处理（判手校正 + 指法生成）
+   ----------------------------------------------------------------------------
+   引擎返回的音符经常：判手不正确、没有指法。
+   这里在识谱完成后统一修正。
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var MIDDLE_C = 60;
+  var BLACK_PCS = { 1: 1, 3: 1, 6: 1, 8: 1, 10: 1 };
+
+  function isBlack(midi) {
+    return BLACK_PCS[((midi % 12) + 12) % 12] === 1;
+  }
+
+  /* ① 判手：和弦整体判手，单音按音高 */
+  function fixHands(events) {
+    var changed = 0;
+    (events || []).forEach(function (event) {
+      var notes = (event.notes || []).filter(function (n) { return typeof n.m === 'number'; });
+      if (!notes.length) return;
+      var hand;
+      if (notes.length > 1) {
+        var sum = 0;
+        notes.forEach(function (n) { sum += n.m; });
+        hand = (sum / notes.length) >= MIDDLE_C ? 'R' : 'L';
+      } else {
+        hand = notes[0].m >= MIDDLE_C ? 'R' : 'L';
+      }
+      notes.forEach(function (note) {
+        if (note.h !== hand) { note.h = hand; changed += 1; }
+      });
+    });
+    return changed;
+  }
+
+  /* ② 指法：按把位分段生成，禁止交叉 */
+  function makeFingers(events) {
+    var assigned = 0;
+    ['R', 'L'].forEach(function (hand) {
+      /* 把这只手的音按时间顺序收集 */
+      var blocks = [];
+      (events || []).forEach(function (event) {
+        var notes = (event.notes || []).filter(function (n) {
+          return n.h === hand && typeof n.m === 'number';
+        });
+        if (notes.length) {
+          notes.sort(function (a, b) { return a.m - b.m; });
+          blocks.push(notes);
+        }
+      });
+      if (!blocks.length) return;
+
+      var index = 0;
+      while (index < blocks.length) {
+        /* 尽量把后续音收进同一把位：最多 5 个不同音高、跨度不超一个八度 */
+        var group = [];
+        var position = index;
+        while (position < blocks.length) {
+          var candidate = group.concat(blocks[position]).sort(function (a, b) { return a.m - b.m; });
+          var unique = [];
+          candidate.forEach(function (n) {
+            if (!unique.length || unique[unique.length - 1].m !== n.m) unique.push(n);
+          });
+          if (unique.length > 5 || (unique[unique.length - 1].m - unique[0].m) > 12) break;
+          group = candidate;
+          position += 1;
+        }
+        if (!group.length) { group = blocks[index]; position = index + 1; }
+
+        var uniq = [];
+        group.sort(function (a, b) { return a.m - b.m; }).forEach(function (n) {
+          if (!uniq.length || uniq[uniq.length - 1].m !== n.m) uniq.push(n);
+        });
+
+        var memory = {};
+        var count = uniq.length;
+        uniq.forEach(function (note, k) {
+          var ratio = k / Math.max(1, count - 1);
+          var raw = (hand === 'R') ? (1 + ratio * 4) : (5 - ratio * 4);
+          var finger = Math.max(1, Math.min(5, Math.round(raw)));
+          if (k > 0) {
+            var previous = uniq[k - 1].f;
+            if (previous) {
+              if (hand === 'R' && finger <= previous) finger = Math.min(5, previous + 1);
+              if (hand === 'L' && finger >= previous) finger = Math.max(1, previous - 1);
+            }
+          }
+          if (isBlack(note.m) && (finger === 1 || finger === 5) && count < 5) {
+            finger = (finger === 1) ? 2 : 4;
+          }
+          note.f = finger;
+          memory[note.m] = finger;
+          assigned += 1;
+        });
+
+        /* 同把位里重复音高沿用同一指法 */
+        group.forEach(function (note) {
+          if (!note.f && memory[note.m]) { note.f = memory[note.m]; assigned += 1; }
+        });
+        index = position;
+      }
+    });
+    return assigned;
+  }
+
+  /* 拿到当前曲谱的音符数据 */
+  function currentEvents() {
+    try {
+      if (typeof events !== 'undefined' && Array.isArray(events)) return events;
+    } catch (e) { /* 忽略 */ }
+    return null;
+  }
+
+  function refreshUi() {
+    try { if (typeof refresh === 'function') refresh(); } catch (e) { /* 忽略 */ }
+    try { if (typeof persist === 'function') persist(); } catch (e) { /* 忽略 */ }
+  }
+
+  var applied = '';
+  function improve(reason) {
+    var list = currentEvents();
+    if (!list || !list.length) return false;
+    /* 用「拍位数 + 第一拍音高」做指纹，避免同一份结果反复处理 */
+    var first = list[0] && list[0].notes && list[0].notes[0];
+    var fingerprint = list.length + ':' + (first ? first.m : '?') + ':' + reason;
+    if (fingerprint === applied) return false;
+    applied = fingerprint;
+
+    var hands = fixHands(list);
+    var fingers = makeFingers(list);
+    if (!hands && !fingers) return false;
+    refreshUi();
+
+    var status = document.getElementById('status');
+    if (status) {
+      status.textContent = '识谱后处理完成：校正手别 ' + hands + ' 处，生成指法 ' + fingers + ' 个。请校对音高。'
+        + (/顺序验证通过|识别完成/.test(status.textContent || '') ? '' : '');
+    }
+    return true;
+  }
+
+  /* 识谱按钮点完后自动处理（用轮询等它结束，不依赖页面内部函数） */
+  function watchRecognize() {
+    var button = document.getElementById('recognize');
+    if (!button || button.__p2kWatch) return;
+    button.__p2kWatch = true;
+    button.addEventListener('click', function () {
+      var tries = 0;
+      var timer = setInterval(function () {
+        tries += 1;
+        var busy = button.disabled;
+        var status = (document.getElementById('status') || {}).textContent || '';
+        var finished = /识别完成|顺序验证通过|识谱后处理完成/.test(status);
+        if ((!busy && finished) || tries > 400) {
+          clearInterval(timer);
+          if (finished) setTimeout(function () { improve('after-recognize'); }, 800);
+        }
+      }, 1500);
+    }, false);
+  }
+
+  /* 也处理「导入标注」进来的数据 */
+  function watchImport() {
+    var input = document.getElementById('import');
+    if (!input || input.__p2kWatch) return;
+    input.__p2kWatch = true;
+    input.addEventListener('change', function () {
+      setTimeout(function () { improve('after-import'); }, 2500);
+    }, false);
+  }
+
+  function tick() {
+    watchRecognize();
+    watchImport();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', tick, { once: true });
+  } else {
+    tick();
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    tick();
+    if (tries > 200) clearInterval(timer);
+  }, 900);
+
+  window.p2kOmrAfter = { improve: improve, fixHands: fixHands, makeFingers: makeFingers };
+})();
 </script></body></html>
 
 

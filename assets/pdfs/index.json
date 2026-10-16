@@ -1,6 +1,7 @@
 {
  "items": [
   {
+   "order": 1,
    "slug": "p01",
    "title": "aLIEz - Aldnoah.Zero - 2nd Ending Theme",
    "name": "aLIEz - Aldnoah.Zero - 2nd Ending Theme.pdf",
@@ -9,6 +10,7 @@
    "b64": "p01.b64"
   },
   {
+   "order": 2,
    "slug": "p02",
    "title": "Call of Silence - Attack on Titan Season 2 - Soundtrack",
    "name": "Call of Silence - Attack on Titan Season 2 - Soundtrack.pdf",
@@ -17,6 +19,7 @@
    "b64": "p02.b64"
   },
   {
+   "order": 3,
    "slug": "p03",
    "title": "Hikaru nara - Shigatsu wa Kimi no Uso - Opening Theme",
    "name": "Hikaru nara - Shigatsu wa Kimi no Uso - Opening Theme.pdf",
@@ -25,6 +28,7 @@
    "b64": "p03.b64"
   },
   {
+   "order": 4,
    "slug": "p04",
    "title": "Main Theme - Detective Conan - Soundtrack",
    "name": "Main Theme - Detective Conan - Soundtrack.pdf",
@@ -33,6 +37,7 @@
    "b64": "p04.b64"
   },
   {
+   "order": 5,
    "slug": "p05",
    "title": "One Last Kiss - Evangelion 3.0+1.0 Thrice Upon a Time - Theme Song",
    "name": "One Last Kiss - Evangelion 3.0+1.0 Thrice Upon a Time - Theme Song.pdf",
@@ -41,6 +46,7 @@
    "b64": "p05.b64"
   },
   {
+   "order": 6,
    "slug": "p06",
    "title": "Secret Base - Anohana The Flower We Saw That Day - Ending Theme",
    "name": "Secret Base - Anohana The Flower We Saw That Day - Ending Theme.pdf",
@@ -49,6 +55,7 @@
    "b64": "p06.b64"
   },
   {
+   "order": 7,
    "slug": "p07",
    "title": "Uchiage Hanabi - Fireworks (2017) - Theme Song",
    "name": "Uchiage Hanabi - Fireworks (2017) - Theme Song.pdf",
@@ -56,5 +63,14 @@
    "sizeText": "212 KB",
    "b64": "p07.b64"
   }
+ ],
+ "defaults": [
+  "p01",
+  "p02",
+  "p03",
+  "p04",
+  "p05",
+  "p06",
+  "p07"
  ]
 }
