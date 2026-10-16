@@ -22475,6 +22475,180 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   window.p2kOmrQuality = { recommendFingers: betterRecommendFingers };
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 公网页体验修复
+   ----------------------------------------------------------------------------
+   ① 账号按钮：公网页没有后端，登录本来就不可能。
+      改成点一下弹出说明 + 「去本地版」按钮，而不是毫无反应。
+   ② 导入 PDF：公网页有时卡在「正在加载 PDF 引擎…」。
+      这里兜底自己加载 pdf.js，并把 PDF 渲染到主画布。
+   ========================================================================== */
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+
+  function isPublicHost() {
+    try {
+      return /github\.io$|gitee\.io$|netlify\.app$|vercel\.app$|pages\.dev$/i.test(location.hostname);
+    } catch (e) { return false; }
+  }
+  function loopback() { return 'http://127.0.0.1:8766'; }
+  function say(text) {
+    var el = $('status');
+    if (el) el.textContent = String(text);
+  }
+
+  /* ---------- ① 账号按钮：给明确说明 ---------- */
+  function buildNotice() {
+    var box = $('p2kPublicNotice');
+    if (box) return box;
+    box = document.createElement('div');
+    box.id = 'p2kPublicNotice';
+    box.style.cssText = 'position:fixed;inset:0;background:#00000088;display:flex;'
+      + 'align-items:center;justify-content:center;z-index:99999;padding:20px';
+    box.innerHTML =
+      '<div style="max-width:520px;background:#fff;border-radius:16px;padding:22px 24px;'
+      + 'line-height:1.8;color:#20302f;box-shadow:0 20px 60px #0003">'
+      + '<h2 style="margin:0 0 10px;font-size:19px;color:#216653">公网页不能登录</h2>'
+      + '<p style="margin:0 0 12px">这个网址是 <b>GitHub Pages 静态页面</b>，只有网页文件、'
+      + '<b>没有后端服务器</b>，所以无法登录、识谱、同步仓库。</p>'
+      + '<p style="margin:0 0 12px;background:#fbf7ea;border:1px solid #e8dcb0;'
+      + 'border-radius:10px;padding:10px 12px;font-size:14px;color:#6b5a20">'
+      + '浏览器也禁止 https 页面访问你电脑上的 http://127.0.0.1，这是安全规则，网页改不了。</p>'
+      + '<p style="margin:0 0 14px"><b>要看谱 / 识谱 / 登录 / 同步手机，请用：</b><br>'
+      + '<code style="background:#f0f3f0;border-radius:6px;padding:3px 8px">'
+      + loopback() + '</code></p>'
+      + '<div style="display:flex;gap:10px;flex-wrap:wrap">'
+      + '<a href="' + loopback() + '" style="flex:1;text-align:center;background:#216653;'
+      + 'color:#fff;text-decoration:none;border-radius:10px;padding:12px;font-weight:600;min-width:150px">'
+      + '打开本地版</a>'
+      + '<button type="button" id="p2kNoticeClose" style="flex:1;background:#fff;'
+      + 'color:#216653;border:1px solid #216653;border-radius:10px;padding:12px;min-width:110px;cursor:pointer">'
+      + '继续在这里看谱</button>'
+      + '</div></div>';
+    document.body.appendChild(box);
+    var close = $('p2kNoticeClose');
+    if (close) close.addEventListener('click', function () { box.remove(); }, false);
+    box.addEventListener('click', function (event) {
+      if (event.target === box) box.remove();
+    }, false);
+    return box;
+  }
+
+  function hookAccountButton() {
+    var button = $('accountBtn');
+    if (!button || button.__p2kPublicHooked) return;
+    button.__p2kPublicHooked = true;
+    button.addEventListener('click', function (event) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      buildNotice();
+    }, true);   // 捕获阶段，先于页面自己的处理
+  }
+
+  /* ---------- ② 导入 PDF：兜底加载 pdf.js 并显示 ---------- */
+  var libPromise = null;
+  function loadPdfLib() {
+    if (window.pdfLibReady && window.pdfLibReady.getDocument) return Promise.resolve(window.pdfLibReady);
+    if (libPromise) return libPromise;
+    libPromise = (async function () {
+      var candidates = [
+        './assets/pdfjs/pdf.min.mjs',
+        new URL('./assets/pdfjs/pdf.min.mjs', location.href).href,
+      ];
+      var lastError = null;
+      for (var i = 0; i < candidates.length; i++) {
+        try {
+          var mod = await import(candidates[i]);
+          var lib = (mod && mod.getDocument) ? mod : (mod && mod.default);
+          if (lib && lib.getDocument) {
+            try {
+              lib.GlobalWorkerOptions.workerSrc =
+                new URL('./assets/pdfjs/pdf.worker.min.mjs', location.href).href;
+            } catch (e) { /* 忽略 */ }
+            window.pdfLibReady = lib;
+            return lib;
+          }
+        } catch (error) { lastError = error; }
+      }
+      throw new Error('PDF 引擎加载失败' + (lastError ? '：' + lastError.message : ''));
+    })();
+    return libPromise;
+  }
+
+  async function renderInto(bytes, title) {
+    var lib = await loadPdfLib();
+    var doc = await lib.getDocument({ data: bytes.slice ? bytes.slice() : bytes, isEvalSupported: false }).promise;
+    window.pdf = doc;
+    window.pdfBytes = bytes;
+    var select = $('page');
+    if (select) {
+      select.replaceChildren();
+      for (var i = 1; i <= doc.numPages; i++) select.appendChild(new Option(String(i), String(i)));
+      select.value = '1';
+    }
+    var canvas = $('score');
+    if (canvas) {
+      var page = await doc.getPage(1);
+      var viewport = page.getViewport({ scale: 1.5 });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvas.style.width = '100%';
+      canvas.style.height = 'auto';
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+    }
+    var nameEl = $('filename');
+    if (nameEl) nameEl.textContent = title || '曲谱';
+    var source = $('source');
+    if (source) source.textContent = '已导入（公网页 · 仅本机处理）';
+    say('已打开「' + (title || '曲谱') + '」· 第 1 页（共 ' + doc.numPages + ' 页）。'
+      + '注意：公网页没有识谱服务，AI 自动识谱请用 ' + loopback() + '。');
+  }
+
+  function hookFileInput() {
+    var input = $('file');
+    if (!input || input.__p2kPublicHooked) return;
+    input.__p2kPublicHooked = true;
+    input.addEventListener('change', async function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      say('正在打开「' + file.name + '」…');
+      /* 给页面自己的处理器一点时间；如果 5 秒后还没打开，我们自己来 */
+      setTimeout(async function () {
+        var canvas = $('score');
+        var opened = window.pdf && window.pdf.numPages;
+        if (opened) return;                        // 页面自己成功了
+        try {
+          var bytes = new Uint8Array(await file.arrayBuffer());
+          await renderInto(bytes, file.name.replace(/\.pdf$/i, ''));
+        } catch (error) {
+          say('打开 PDF 失败：' + String(error.message || error));
+        }
+      }, 5000);
+    }, false);
+  }
+
+  function tick() {
+    if (!isPublicHost()) return;
+    hookAccountButton();
+    hookFileInput();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', tick, { once: true });
+  } else {
+    tick();
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    tick();
+    if (tries > 300) clearInterval(timer);
+  }, 900);
+
+  window.p2kPublicFix = { notice: buildNotice };
+})();
 </script></body></html>
 
 
