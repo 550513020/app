@@ -21493,125 +21493,6 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 })();
 </script><script>
 /* ============================================================================
-   谱键 P2K · 公网页保护 + 版本化下载链接
-   ----------------------------------------------------------------------------
-   公网页（GitHub Pages）没有后端，但页面仍会去请求 /api/*，
-   在 GitHub 上就变成 405/404，界面显示「请求失败 405」。
-
-   这里判断：如果当前是静态托管且没有可用后端，
-   就直接把 /api/* 的请求拦下、返回离线结果，不发网络请求。
-   ========================================================================== */
-(function () {
-  'use strict';
-
-  function isStaticHost() {
-    var host = String(location.hostname || '');
-    // GitHub Pages / 其它静态托管：没有后端
-    return /github\.io$/i.test(host)
-        || /gitee\.io$/i.test(host)
-        || /netlify\.app$/i.test(host)
-        || /vercel\.app$/i.test(host)
-        || /pages\.dev$/i.test(host);
-  }
-
-  function $(id) { return document.getElementById(id); }
-
-  if (isStaticHost()) {
-    /* ---------- ① 拦下所有 /api 请求 ---------- */
-    var originalFetch = window.fetch;
-    window.fetch = function (input, init) {
-      var url = '';
-      try {
-        url = (typeof input === 'string') ? input : (input && input.url) || '';
-      } catch (e) { url = ''; }
-      if (url.indexOf('/api/') >= 0) {
-        // 不联网，直接返回离线结果
-        var path = url.slice(url.indexOf('/api/'));
-        var body;
-        if (path.indexOf('/health') >= 0) {
-          body = { ok: false, environment: 'static', note: '静态托管页面没有后端' };
-        } else if (path.indexOf('/library') >= 0) {
-          body = { scores: [] };
-        } else {
-          body = { detail: '静态托管页面没有后端；请打开电脑上的 http://127.0.0.1:8766' };
-        }
-        return Promise.resolve(new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }));
-      }
-      return originalFetch.apply(this, arguments);
-    };
-
-    /* ---------- ② 界面上说清楚 ---------- */
-    function explain() {
-      var cloudState = $('cloudState');
-      if (cloudState && (cloudState.textContent || '').indexOf('静态') < 0) {
-        cloudState.textContent =
-          '这是公网页面（只有网页，没有后端）：可以看谱、看教程、下载 App。'
-          + '要登录、识谱、同步仓库，请打开电脑上的 http://127.0.0.1:8766';
-      }
-      var privacy = $('privacy');
-      if (privacy) {
-        privacy.textContent =
-          '公网页面无法连接你电脑上的识谱服务（浏览器禁止 https 页面访问 http://127.0.0.1）。'
-          + '请在同一台电脑上打开 http://127.0.0.1:8766 使用完整功能。';
-      }
-      // 把登录/同步按钮标成需要本地页面
-      ['saveCloudBtn', 'accountBtn'].forEach(function (id) {
-        var el = $(id);
-        if (!el) return;
-        el.title = '公网页面没有后端，请在电脑上打开 http://127.0.0.1:8766';
-      });
-    }
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', explain, { once: true });
-    } else {
-      explain();
-    }
-    var tries = 0;
-    var timer = setInterval(function () {
-      tries += 1;
-      explain();
-      if (tries > 60) clearInterval(timer);
-    }, 1000);
-  }
-
-  /* ---------- ③ 版本化下载链接 ---------- */
-  /* 把下载链接指向带版本号的文件名，这样每次更新链接都会变 */
-  function versionizeDownload() {
-    var version = '2.46.5';
-    try {
-      if (window.P2K_VERSION) version = String(window.P2K_VERSION);
-    } catch (e) { /* 忽略 */ }
-    var links = document.querySelectorAll('a[href*="P2K-debug.apk"]');
-    [].slice.call(links).forEach(function (a) {
-      if (a.getAttribute('data-versionized')) return;
-      a.setAttribute('data-versionized', '1');
-      var base = a.getAttribute('href').split('?')[0];
-      a.setAttribute('href', base.replace('P2K-debug.apk', 'P2K-' + version + '.apk'));
-      a.setAttribute('download', 'P2K-' + version + '.apk');
-      var text = (a.textContent || '');
-      if (text.indexOf('下载') >= 0 && text.indexOf(version) < 0) {
-        a.textContent = '下载 Android APK ↓ (v' + version + ')';
-      }
-    });
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', versionizeDownload, { once: true });
-  } else {
-    versionizeDownload();
-  }
-  var vtries = 0;
-  var vtimer = setInterval(function () {
-    vtries += 1;
-    versionizeDownload();
-    if (vtries > 120) clearInterval(vtimer);
-  }, 800);
-})();
-</script><script>
-/* ============================================================================
    谱键 P2K · 方案A：去掉本机存档按钮 + 识谱结果进音频库
    ----------------------------------------------------------------------------
    ① 删掉「保存本机存档」按钮（功能与仓库重复）
@@ -21790,6 +21671,297 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
   }, 1200);
 
   window.p2kPlanA = { removeLocalSaveButton: removeLocalSaveButton, loadRecognized: loadRecognized };
+})();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 公网页保护 + 版本化下载链接
+   ----------------------------------------------------------------------------
+   公网页（GitHub Pages）没有后端，但页面仍会去请求 /api/*，
+   在 GitHub 上就变成 405/404，界面显示「请求失败 405」。
+
+   这里判断：如果当前是静态托管且没有可用后端，
+   就直接把 /api/* 的请求拦下、返回离线结果，不发网络请求。
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  function isStaticHost() {
+    var host = String(location.hostname || '');
+    // GitHub Pages / 其它静态托管：没有后端
+    return /github\.io$/i.test(host)
+        || /gitee\.io$/i.test(host)
+        || /netlify\.app$/i.test(host)
+        || /vercel\.app$/i.test(host)
+        || /pages\.dev$/i.test(host);
+  }
+
+  function $(id) { return document.getElementById(id); }
+
+  if (isStaticHost()) {
+    /* ---------- ① 拦下后端请求 ----------
+       注意：OMR 探活（/api/omr-health、/api/omr-start）不拦，
+       让它正常失败即可 —— 拦了会被页面判断成"路由不通"而弹出"需在本机"提示。 */
+    var originalFetch = window.fetch;
+    window.fetch = function (input, init) {
+      var url = '';
+      try {
+        url = (typeof input === 'string') ? input : (input && input.url) || '';
+      } catch (e) { url = ''; }
+      var isOmr = url.indexOf('/api/omr') >= 0;
+      if (url.indexOf('/api/') >= 0 && !isOmr) {
+        // 不联网，直接返回离线结果
+        var path = url.slice(url.indexOf('/api/'));
+        var body;
+        if (path.indexOf('/health') >= 0) {
+          body = { ok: false, environment: 'static', note: '静态托管页面没有后端' };
+        } else if (path.indexOf('/library') >= 0) {
+          body = { scores: [] };
+        } else if (path.indexOf('/score/repo') >= 0) {
+          body = { ok: false, items: [], total: 0 };
+        } else {
+          body = { detail: '静态托管页面没有后端；请打开电脑上的 http://127.0.0.1:8766' };
+        }
+        return Promise.resolve(new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return originalFetch.apply(this, arguments);
+    };
+
+    /* ---------- ② 界面上说清楚 ---------- */
+    function explain() {
+      var cloudState = $('cloudState');
+      if (cloudState && (cloudState.textContent || '').indexOf('静态') < 0) {
+        cloudState.textContent =
+          '这是公网页面（只有网页，没有后端）：可以看谱、看教程、下载 App。'
+          + '要登录、识谱、同步仓库，请打开电脑上的 http://127.0.0.1:8766';
+      }
+      var privacy = $('privacy');
+      if (privacy) {
+        privacy.textContent =
+          '公网页面无法连接你电脑上的识谱服务（浏览器禁止 https 页面访问 http://127.0.0.1）。'
+          + '请在同一台电脑上打开 http://127.0.0.1:8766 使用完整功能。';
+      }
+      // 把登录/同步按钮标成需要本地页面
+      ['saveCloudBtn', 'accountBtn'].forEach(function (id) {
+        var el = $(id);
+        if (!el) return;
+        el.title = '公网页面没有后端，请在电脑上打开 http://127.0.0.1:8766';
+      });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', explain, { once: true });
+    } else {
+      explain();
+    }
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries += 1;
+      explain();
+      if (tries > 60) clearInterval(timer);
+    }, 1000);
+  }
+
+  /* ---------- ③ 版本化下载链接 ---------- */
+  /* 把下载链接指向带版本号的文件名，这样每次更新链接都会变 */
+  function versionizeDownload() {
+    var version = '2.46.3';
+    try {
+      if (window.P2K_VERSION) version = String(window.P2K_VERSION);
+    } catch (e) { /* 忽略 */ }
+    var links = document.querySelectorAll('a[href*="P2K-debug.apk"]');
+    [].slice.call(links).forEach(function (a) {
+      if (a.getAttribute('data-versionized')) return;
+      a.setAttribute('data-versionized', '1');
+      var base = a.getAttribute('href').split('?')[0];
+      a.setAttribute('href', base.replace('P2K-debug.apk', 'P2K-' + version + '.apk'));
+      a.setAttribute('download', 'P2K-' + version + '.apk');
+      var text = (a.textContent || '');
+      if (text.indexOf('下载') >= 0 && text.indexOf(version) < 0) {
+        a.textContent = '下载 Android APK ↓ (v' + version + ')';
+      }
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', versionizeDownload, { once: true });
+  } else {
+    versionizeDownload();
+  }
+  var vtries = 0;
+  var vtimer = setInterval(function () {
+    vtries += 1;
+    versionizeDownload();
+    if (vtries > 120) clearInterval(vtimer);
+  }, 800);
+})();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 查看修复 + 徽章清理
+   ----------------------------------------------------------------------------
+   ① 工坊「查看」：改用已验证可靠的方式（取 PDF → 用主画布渲染）
+   ② 去掉「识谱引擎：需在本机使用」之类无法使用时的红色徽章
+   ========================================================================== */
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+
+  function token() {
+    try { return localStorage.getItem('p2k-account-token-v2') || ''; } catch (e) { return ''; }
+  }
+  function apiBase() {
+    try { if (typeof P2K_API === 'string' && P2K_API) return P2K_API; } catch (e) { /* 忽略 */ }
+    try {
+      if (window.P2KNative && typeof window.P2KNative.getSiteBase === 'function') {
+        var b = String(window.P2KNative.getSiteBase() || '').replace(/\/+$/, '');
+        if (b) return b + '/api';
+      }
+    } catch (e) { /* 忽略 */ }
+    return '/api';
+  }
+  function say(text) {
+    var el = $('status');
+    if (el) el.textContent = String(text);
+  }
+
+  /* 把 PDF 字节渲染到主画布（这条路径已经验证可用） */
+  var libCache = null;
+  async function getLib() {
+    if (libCache && libCache.getDocument) return libCache;
+    var mod = await import('./assets/pdfjs/pdf.min.mjs');
+    var lib = (mod && mod.getDocument) ? mod : (mod && mod.default);
+    if (!lib || !lib.getDocument) throw new Error('pdf.js 未就绪');
+    try {
+      lib.GlobalWorkerOptions.workerSrc = new URL('./assets/pdfjs/pdf.worker.min.mjs', location.href).href;
+    } catch (e) { /* 忽略 */ }
+    libCache = lib;
+    return lib;
+  }
+
+  async function renderBytes(bytes, title) {
+    var lib = await getLib();
+    var doc = await lib.getDocument({ data: bytes.slice ? bytes.slice() : bytes, isEvalSupported: false }).promise;
+    window.pdf = doc;
+    window.pdfBytes = bytes;
+    var select = $('page');
+    if (select) {
+      select.replaceChildren();
+      for (var i = 1; i <= doc.numPages; i++) select.appendChild(new Option(String(i), String(i)));
+      select.value = '1';
+      select.disabled = false;
+    }
+    var fit = $('fitPage');
+    if (fit) fit.disabled = false;
+    var rec = $('recognize');
+    if (rec) rec.disabled = false;
+    var canvas = $('score');
+    if (canvas) {
+      var page = await doc.getPage(1);
+      var viewport = page.getViewport({ scale: 1.5 });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvas.style.width = '100%';
+      canvas.style.height = 'auto';
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+    }
+    var nameEl = $('filename');
+    if (nameEl) nameEl.textContent = title || '仓库曲谱';
+    var source = $('source');
+    if (source) source.textContent = '仓库曲谱 · 已从仓库取回，可离线保存';
+    return doc;
+  }
+
+  /* 打开仓库里的一份 PDF */
+  async function openRepoPdf(item) {
+    if (!item || !item.id) { say('这份曲谱没有 id，打不开。'); return false; }
+    var title = item.title || (item.name || '').replace(/\.pdf$/i, '') || '仓库曲谱';
+    say('正在取「' + title + '」…');
+    try {
+      var headers = {};
+      if (token()) headers.Authorization = 'Bearer ' + token();
+      var res = await fetch(apiBase() + '/score/repo/file?id=' + encodeURIComponent(item.id), { headers: headers });
+      if (!res.ok) { say('取谱失败：HTTP ' + res.status); return false; }
+      var bytes = new Uint8Array(await res.arrayBuffer());
+      // 校验是不是真的 PDF
+      var head = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]);
+      if (head.indexOf('%PDF') !== 0) { say('这份文件不是有效 PDF（' + bytes.length + ' 字节）'); return false; }
+
+      // 关掉工坊，回到主界面显示
+      var studio = $('p2kStudioPanel') || $('p2kStudioDialog');
+      if (studio && studio.close) { try { studio.close(); } catch (e) { /* 忽略 */ } }
+
+      await renderBytes(bytes, title);
+      say('已打开「' + title + '」（' + Math.round(bytes.length / 1024) + ' KB）');
+      return true;
+    } catch (error) {
+      say('打开失败：' + String(error.message || error));
+      return false;
+    }
+  }
+
+  /* 接管工坊的「查看」按钮 */
+  function hookViewButtons() {
+    var host = $('p2kStudioSearch');
+    if (!host) return;
+    var rows = host.querySelectorAll('div');
+    [].slice.call(rows).forEach(function (row) {
+      var btn = row.querySelector ? row.querySelector('button') : null;
+      if (!btn || !/查看/.test(btn.textContent || '')) return;
+      if (btn.__p2kViewHooked) return;
+      btn.__p2kViewHooked = true;
+      // 记下这一行的标题与 id
+      var title = '';
+      var strong = row.querySelector('strong');
+      title = strong ? strong.textContent.trim() : '';
+      var id = row.getAttribute('data-id') || btn.getAttribute('data-id') || '';
+      btn.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (id) { openRepoPdf({ id: id, title: title }); return; }
+        // 没有 id 时按标题去仓库里找
+        fetch(apiBase() + '/score/repo?q=' + encodeURIComponent(title) + '&limit=20')
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var items = data.items || [];
+            var hit = items.find(function (x) { return (x.title || '') === title; }) || items[0];
+            if (hit) openRepoPdf(hit);
+            else say('仓库里找不到「' + title + '」');
+          })
+          .catch(function () { say('取谱失败'); });
+      }, true);   // 捕获阶段，先于页面自己的处理
+    });
+  }
+
+  /* ② 去掉「识谱引擎」徽章
+     页面里有两个地方会设置它（预热状态 + 路由探测），
+     所以直接把它从 DOM 里移除，最彻底。 */
+  function tidyChip() {
+    var chip = $('p2kOmrChip');
+    if (!chip) return;
+    chip.style.display = 'none';
+    chip.setAttribute('hidden', '');
+    if (chip.parentElement) chip.parentElement.removeChild(chip);
+  }
+
+  function tick() {
+    hookViewButtons();
+    tidyChip();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', tick, { once: true });
+  } else {
+    tick();
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    tick();
+    if (tries > 400) clearInterval(timer);
+  }, 900);
+
+  window.p2kRepoView = { open: openRepoPdf, renderBytes: renderBytes };
 })();
 </script></body></html>
 
