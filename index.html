@@ -21637,17 +21637,16 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
   }
 
   /* ---------- ① 去掉「保存本机存档」按钮 ----------
-     注意：只能隐藏，绝不能从 DOM 删除。
-     页面自己的绑定代码里有 $('saveLocalBtn').disabled=...，
-     元素不存在会抛异常，导致后面所有绑定（含登录按钮）全部失效。 */
+     注意两点：
+     1) 只能隐藏按钮本身，绝不能删元素，也不能藏父容器 ——
+        父容器 .p2k-cloud-tools 里装着「账号登录 / 琴谱仓库 / 同步到云端」，
+        藏了父容器会把登录入口一起藏掉。
+     2) 页面代码里有 $('saveLocalBtn').disabled=...，
+        删元素会抛异常，连锁导致所有绑定失效。 */
   function removeLocalSaveButton() {
     var btn = $('saveLocalBtn');
     if (!btn) return;
     if (btn.style) btn.style.display = 'none';
-    if (btn.parentElement) {
-      btn.parentElement.setAttribute('data-p2k-save-hidden', '1');
-      btn.parentElement.style.display = 'none';
-    }
     btn.setAttribute('hidden', '');
     btn.disabled = true;
   }
