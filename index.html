@@ -21371,6 +21371,126 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
     fetchCloudPdf: fetchCloudPdf,
   };
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 工坊提示清理 + 音频库过滤 + 导入即入仓库
+   ========================================================================== */
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+
+  function webToken() {
+    try { return localStorage.getItem('p2k-account-token-v2') || ''; } catch (e) { return ''; }
+  }
+  function apiBase() {
+    try { if (typeof P2K_API === 'string' && P2K_API) return P2K_API; } catch (e) { /* 忽略 */ }
+    try {
+      if (window.P2KNative && typeof window.P2KNative.getSiteBase === 'function') {
+        var b = String(window.P2KNative.getSiteBase() || '').replace(/\/+$/, '');
+        if (b) return b + '/api';
+      }
+    } catch (e) { /* 忽略 */ }
+    return '/api';
+  }
+
+  /* ---------- ① 去掉红色报错 ---------- */
+  /* 先尝试从根上避免：把网页 token 写进工坊自己的存储键，
+     这样工坊读账号时带的是有效凭据，不会产生 401。 */
+  function injectStudioToken() {
+    var token = webToken();
+    if (!token) return;
+    try {
+      localStorage.setItem('p2k-studio-token', token);
+    } catch (e) { /* 忽略 */ }
+    // 如果工坊已经把 token 读成空的，等它再次读取时就会拿到
+  }
+
+  function hideStudioErrors() {
+    /* 找出所有含报错文字的元素，把它们的「最外层可见容器」藏起来。
+       红色提示条通常是 <div class="...warn">文字</div> 或
+       外层 div 包着色背景 + 内层文字，所以要往上找到合适的父节点。 */
+    var all = document.querySelectorAll('body *');
+    [].slice.call(all).forEach(function (node) {
+      var own = '';
+      for (var i = 0; i < node.childNodes.length; i++) {
+        var child = node.childNodes[i];
+        if (child.nodeType === 3) own += child.textContent || '';
+      }
+      var text = (own || node.textContent || '');
+      if (text.indexOf('读取账号信息失败') < 0) return;
+
+      // 从自己往上找：只要父节点里也只有这一条提示，就继续往上
+      var target = node;
+      var parent = node.parentElement;
+      var guard = 0;
+      while (parent && parent !== document.body && guard < 6) {
+        guard += 1;
+        var siblingsText = (parent.textContent || '').replace(text, '').trim();
+        if (siblingsText.length > 0) break;   // 父节点里还有别的内容，停
+        target = parent;
+        parent = parent.parentElement;
+      }
+      target.style.display = 'none';
+      target.setAttribute('data-p2k-error-hidden', '1');
+    });
+  }
+
+  /* ---------- ② 音频库过滤掉自检/示例项 ---------- */
+  var SELF_TEST_WORDS = ['自检', '测试', 'test', 'sample', 'demo', '示例', 'selftest'];
+  function isSelfTest(name) {
+    var lower = String(name || '').toLowerCase();
+    return SELF_TEST_WORDS.some(function (word) { return lower.indexOf(word.toLowerCase()) >= 0; });
+  }
+  function filterAudioList() {
+    var box = $('p2kStudioAudio');
+    if (!box) return;
+    [].slice.call(box.querySelectorAll('li')).forEach(function (item) {
+      var text = item.textContent || '';
+      if (isSelfTest(text)) {
+        item.style.display = 'none';
+        item.setAttribute('data-p2k-hidden', '1');
+      }
+    });
+  }
+
+  /* ---------- ③ 导入 PDF 后直接同步进仓库（含原谱） ---------- */
+  var autoSynced = '';
+  async function syncAfterRecognize() {
+    var status = ($('status') || {}).textContent || '';
+    if (status.indexOf('顺序验证通过') < 0 && status.indexOf('识谱完成') < 0) return;
+    if (!webToken()) return;
+    var title = ($('filename') || {}).textContent || '';
+    if (!title || title === autoSynced) return;
+    autoSynced = title;
+    try {
+      if (typeof window.p2kAutoSyncNow === 'function') {
+        await window.p2kAutoSyncNow(true);   // true = 连原谱一起传
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /* ---------- 循环执行（工坊面板是动态打开的） ---------- */
+  function tick() {
+    injectStudioToken();
+    hideStudioErrors();
+    filterAudioList();
+    syncAfterRecognize();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', tick, { once: true });
+  } else {
+    tick();
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    tick();
+    if (tries > 400) clearInterval(timer);
+  }, 1000);
+
+  window.p2kStudioTidy = { tick: tick, isSelfTest: isSelfTest };
+})();
 </script></body></html>
 
 
