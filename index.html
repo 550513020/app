@@ -21491,6 +21491,307 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   window.p2kStudioTidy = { tick: tick, isSelfTest: isSelfTest };
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 公网页保护 + 版本化下载链接
+   ----------------------------------------------------------------------------
+   公网页（GitHub Pages）没有后端，但页面仍会去请求 /api/*，
+   在 GitHub 上就变成 405/404，界面显示「请求失败 405」。
+
+   这里判断：如果当前是静态托管且没有可用后端，
+   就直接把 /api/* 的请求拦下、返回离线结果，不发网络请求。
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  function isStaticHost() {
+    var host = String(location.hostname || '');
+    // GitHub Pages / 其它静态托管：没有后端
+    return /github\.io$/i.test(host)
+        || /gitee\.io$/i.test(host)
+        || /netlify\.app$/i.test(host)
+        || /vercel\.app$/i.test(host)
+        || /pages\.dev$/i.test(host);
+  }
+
+  function $(id) { return document.getElementById(id); }
+
+  if (isStaticHost()) {
+    /* ---------- ① 拦下所有 /api 请求 ---------- */
+    var originalFetch = window.fetch;
+    window.fetch = function (input, init) {
+      var url = '';
+      try {
+        url = (typeof input === 'string') ? input : (input && input.url) || '';
+      } catch (e) { url = ''; }
+      if (url.indexOf('/api/') >= 0) {
+        // 不联网，直接返回离线结果
+        var path = url.slice(url.indexOf('/api/'));
+        var body;
+        if (path.indexOf('/health') >= 0) {
+          body = { ok: false, environment: 'static', note: '静态托管页面没有后端' };
+        } else if (path.indexOf('/library') >= 0) {
+          body = { scores: [] };
+        } else {
+          body = { detail: '静态托管页面没有后端；请打开电脑上的 http://127.0.0.1:8766' };
+        }
+        return Promise.resolve(new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return originalFetch.apply(this, arguments);
+    };
+
+    /* ---------- ② 界面上说清楚 ---------- */
+    function explain() {
+      var cloudState = $('cloudState');
+      if (cloudState && (cloudState.textContent || '').indexOf('静态') < 0) {
+        cloudState.textContent =
+          '这是公网页面（只有网页，没有后端）：可以看谱、看教程、下载 App。'
+          + '要登录、识谱、同步仓库，请打开电脑上的 http://127.0.0.1:8766';
+      }
+      var privacy = $('privacy');
+      if (privacy) {
+        privacy.textContent =
+          '公网页面无法连接你电脑上的识谱服务（浏览器禁止 https 页面访问 http://127.0.0.1）。'
+          + '请在同一台电脑上打开 http://127.0.0.1:8766 使用完整功能。';
+      }
+      // 把登录/同步按钮标成需要本地页面
+      ['saveCloudBtn', 'accountBtn'].forEach(function (id) {
+        var el = $(id);
+        if (!el) return;
+        el.title = '公网页面没有后端，请在电脑上打开 http://127.0.0.1:8766';
+      });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', explain, { once: true });
+    } else {
+      explain();
+    }
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries += 1;
+      explain();
+      if (tries > 60) clearInterval(timer);
+    }, 1000);
+  }
+
+  /* ---------- ③ 版本化下载链接 ---------- */
+  /* 把下载链接指向带版本号的文件名，这样每次更新链接都会变 */
+  function versionizeDownload() {
+    var version = '2.46.5';
+    try {
+      if (window.P2K_VERSION) version = String(window.P2K_VERSION);
+    } catch (e) { /* 忽略 */ }
+    var links = document.querySelectorAll('a[href*="P2K-debug.apk"]');
+    [].slice.call(links).forEach(function (a) {
+      if (a.getAttribute('data-versionized')) return;
+      a.setAttribute('data-versionized', '1');
+      var base = a.getAttribute('href').split('?')[0];
+      a.setAttribute('href', base.replace('P2K-debug.apk', 'P2K-' + version + '.apk'));
+      a.setAttribute('download', 'P2K-' + version + '.apk');
+      var text = (a.textContent || '');
+      if (text.indexOf('下载') >= 0 && text.indexOf(version) < 0) {
+        a.textContent = '下载 Android APK ↓ (v' + version + ')';
+      }
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', versionizeDownload, { once: true });
+  } else {
+    versionizeDownload();
+  }
+  var vtries = 0;
+  var vtimer = setInterval(function () {
+    vtries += 1;
+    versionizeDownload();
+    if (vtries > 120) clearInterval(vtimer);
+  }, 800);
+})();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 方案A：去掉本机存档按钮 + 识谱结果进音频库
+   ----------------------------------------------------------------------------
+   ① 删掉「保存本机存档」按钮（功能与仓库重复）
+   ② 识谱后自动保存到仓库（含原谱）—— 已在其它模块里做，这里校验
+   ③ 工坊「音频库」新增「识谱结果」区，列出仓库里的曲谱，可直接看原谱
+   ========================================================================== */
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+
+  function token() {
+    try { return localStorage.getItem('p2k-account-token-v2') || ''; } catch (e) { return ''; }
+  }
+  function apiBase() {
+    try { if (typeof P2K_API === 'string' && P2K_API) return P2K_API; } catch (e) { /* 忽略 */ }
+    try {
+      if (window.P2KNative && typeof window.P2KNative.getSiteBase === 'function') {
+        var b = String(window.P2KNative.getSiteBase() || '').replace(/\/+$/, '');
+        if (b) return b + '/api';
+      }
+    } catch (e) { /* 忽略 */ }
+    return '/api';
+  }
+
+  /* ---------- ① 去掉「保存本机存档」按钮 ----------
+     注意：只能隐藏，绝不能从 DOM 删除。
+     页面自己的绑定代码里有 $('saveLocalBtn').disabled=...，
+     元素不存在会抛异常，导致后面所有绑定（含登录按钮）全部失效。 */
+  function removeLocalSaveButton() {
+    var btn = $('saveLocalBtn');
+    if (!btn) return;
+    if (btn.style) btn.style.display = 'none';
+    if (btn.parentElement) {
+      btn.parentElement.setAttribute('data-p2k-save-hidden', '1');
+      btn.parentElement.style.display = 'none';
+    }
+    btn.setAttribute('hidden', '');
+    btn.disabled = true;
+  }
+
+  /* ---------- ③ 音频库里加「识谱结果」区 ---------- */
+  async function loadRecognized() {
+    var box = $('p2kStudioAudio');
+    if (!box) return;
+    var section = $('p2kRecognizedSection');
+    if (!section) {
+      section = document.createElement('div');
+      section.id = 'p2kRecognizedSection';
+      section.style.cssText = 'margin:0 0 14px;padding-bottom:10px;border-bottom:1px dashed #dce4df';
+      // 插到音频库容器的最前面（容器本身一定存在）
+      if (box.firstChild) box.insertBefore(section, box.firstChild);
+      else box.appendChild(section);
+    }
+    // 没有登录也要把区建出来，只是提示不同
+    if (!token()) {
+      section.innerHTML = '<h3 style="margin:0 0 6px;font-size:15px">🎼 识谱结果</h3>'
+        + '<p class="tiny muted">登录后这里会列出 AI 识谱保存的曲谱。'
+        + '请先用页面顶部的「用户名登录 / 同步」登录。</p>';
+      return;
+    }
+    try {
+      var res = await fetch(apiBase() + '/library', {
+        headers: { Authorization: 'Bearer ' + token() },
+      });
+      if (!res.ok) { section.textContent = ''; return; }
+      var data = await res.json();
+      var scores = data.scores || [];
+      if (!scores.length) {
+        section.innerHTML = '<p class="tiny muted">还没有识谱结果。导入 PDF → AI 自动识谱 → 曲谱会自动保存到这里。</p>';
+        return;
+      }
+      var html = '<h3 style="margin:0 0 6px;font-size:15px">🎼 识谱结果（AI 识谱保存的曲谱）</h3>';
+      html += '<div class="p2k-recognized-list">';
+      scores.forEach(function (score) {
+        html += '<div class="p2k-recognized-row" data-id="' + score.id + '" '
+          + 'style="display:flex;align-items:center;gap:10px;background:#fff;'
+          + 'border:1px solid #e3e9e4;border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+          + '<div style="flex:1;min-width:0">'
+          + '<strong style="display:block">' + (score.title || '未命名') + '</strong>'
+          + '<span class="tiny muted">' + (score.note_count || 0) + ' 个音符'
+          + (score.has_pdf ? ' · 原谱可看' : ' · 无原谱') + '</span></div>'
+          + '<button type="button" class="primary p2k-recognized-view" data-id="' + score.id + '" '
+          + 'style="min-height:36px">看谱</button>'
+          + '</div>';
+      });
+      html += '</div>';
+      section.innerHTML = html;
+
+      // 绑定「看谱」
+      [].slice.call(section.querySelectorAll('.p2k-recognized-view')).forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var id = btn.getAttribute('data-id');
+          var title = '';
+          var row = btn.closest ? btn.closest('.p2k-recognized-row') : null;
+          if (row) {
+            var strong = row.querySelector('strong');
+            title = strong ? strong.textContent : '';
+          }
+          // 关掉工坊，回到主界面看谱
+          var panel = $('p2kStudioPanel') || $('p2kStudioDialog');
+          if (panel && panel.close) panel.close();
+          if (typeof window.p2kShowCloudPdf === 'function') {
+            window.p2kShowCloudPdf(id, title);
+          }
+        }, false);
+      });
+    } catch (error) {
+      section.textContent = '';
+    }
+  }
+
+  /* ---------- 识谱完成后自动保存到仓库 ---------- */
+  var autoSaved = '';
+  async function autoSaveAfterRecognize() {
+    var status = ($('status') || {}).textContent || '';
+    if (status.indexOf('顺序验证通过') < 0 && status.indexOf('识谱完成') < 0) return;
+    if (!token()) return;
+    var title = ($('filename') || {}).textContent || '';
+    var key = title + '|' + status.slice(0, 24);
+    if (!title || key === autoSaved) return;
+    autoSaved = key;
+    try {
+      if (typeof window.p2kAutoSyncNow === 'function') {
+        await window.p2kAutoSyncNow(true);   // 连原谱一起传
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  function tick() {
+    removeLocalSaveButton();
+    autoSaveAfterRecognize();
+    ensureObserver();
+  }
+
+  /* 音频库内容是动态渲染的，监听它变化后插入「识谱结果」区 */
+  var observerReady = false;
+  function ensureObserver() {
+    if (observerReady) return;
+    var box = $('p2kStudioAudio');
+    if (!box) return;
+    observerReady = true;
+    // 只监听「整个容器被重建」的情况：容器本身没被替换，就不再重复插
+    loadRecognized();
+    var tries = 0;
+    var t = setInterval(function () {
+      tries += 1;
+      var liveBox = $('p2kStudioAudio');
+      if (liveBox && !$('p2kRecognizedSection')) loadRecognized();
+      if (tries > 200) clearInterval(t);
+    }, 1500);
+  }
+
+  /* 点音频库标签时也刷新 */
+  function bindAudioTab() {
+    var tabs = document.querySelectorAll('[data-tab]');
+    [].slice.call(tabs).forEach(function (tab) {
+      if (tab.__p2kPlanA) return;
+      tab.__p2kPlanA = true;
+      tab.addEventListener('click', function () {
+        setTimeout(loadRecognized, 800);
+        setTimeout(loadRecognized, 2500);
+      });
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', tick, { once: true });
+  } else {
+    tick();
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    tick();
+    bindAudioTab();
+    if (tries > 400) clearInterval(timer);
+  }, 1200);
+
+  window.p2kPlanA = { removeLocalSaveButton: removeLocalSaveButton, loadRecognized: loadRecognized };
+})();
 </script></body></html>
 
 
