@@ -20885,6 +20885,184 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   window.p2kRenderPhonePdf = renderPhonePdf;
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 增强包（存档进仓库 / 6 个八度 / 任意起始音）
+   ========================================================================== */
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+
+  /* ---------------- ① 保存本机存档 → 同时存进仓库 ---------------- */
+  function token() {
+    try { return localStorage.getItem('p2k-account-token-v2') || ''; } catch (e) { return ''; }
+  }
+  function apiBase() {
+    try { if (typeof P2K_API === 'string' && P2K_API) return P2K_API; } catch (e) { /* 忽略 */ }
+    try {
+      if (window.P2KNative && typeof window.P2KNative.getSiteBase === 'function') {
+        var b = String(window.P2KNative.getSiteBase() || '').replace(/\/+$/, '');
+        if (b) return b + '/api';
+      }
+    } catch (e) { /* 忽略 */ }
+    return '/api';
+  }
+  function say(text) {
+    var el = $('status');
+    if (el) el.textContent = String(text);
+  }
+
+  /* 把当前曲谱（含 PDF）上传到仓库。
+     注意：识别结果在页面的 IIFE 内部，window.events 取不到，
+     所以走页面自己的上传函数（p2kAutoSyncNow 会带上原谱）。 */
+  async function pushToRepo() {
+    if (!token()) {
+      say('已保存到本机。要同时存进仓库，请先「用户名登录 / 同步」。');
+      return false;
+    }
+    var syncer = window.p2kAutoSyncNow;
+    if (typeof syncer === 'function') {
+      try {
+        say('正在把这份曲谱存进仓库…');
+        var ok = await syncer(true);
+        say(ok
+          ? '已保存到本机，并同步进仓库（含完整 PDF）。手机和网页都能打开。'
+          : '已保存到本机；存进仓库未完成，请确认已登录后重试。');
+        return !!ok;
+      } catch (error) {
+        say('存入仓库失败：' + String(error.message || error) + '（已保存在本机）');
+        return false;
+      }
+    }
+    /* 退路：页面没有同步函数时，用手机状态里的音符自己拼（可能为空） */
+    var events = [];
+    try {
+      var snapshot = window.p2kPhoneState ? window.p2kPhoneState() : null;
+      if (snapshot && snapshot.events && snapshot.events.length) events = snapshot.events;
+    } catch (e) { /* 忽略 */ }
+    if (!events.length) {
+      say('已保存到本机。页面未提供云端上传接口，请点「同步到云端」。');
+      return false;
+    }
+    try {
+      var title = (document.getElementById('filename') || {}).textContent || '未命名曲谱';
+      var res = await fetch(apiBase() + '/library', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() },
+        body: JSON.stringify({
+          id: null, title: title, events: events,
+          meter: (document.getElementById('meter') || {}).value || '4/4',
+        }),
+      });
+      if (!res.ok) { say('存入仓库失败：HTTP ' + res.status); return false; }
+      say('已保存到本机，并同步进仓库。');
+      return true;
+    } catch (error) {
+      say('存入仓库失败：' + String(error.message || error));
+      return false;
+    }
+  }
+
+  /* 包住「保存本机存档」按钮：先本机，再仓库 */
+  function hookSaveLocal() {
+    var btn = $('saveLocalBtn');
+    if (!btn || btn.__p2kRepoHooked) return;
+    btn.__p2kRepoHooked = true;
+    btn.addEventListener('click', function () {
+      // 让页面自己的本机保存先跑完（它用时很短），随后上传仓库
+      setTimeout(function () { pushToRepo(); }, 1200);
+    }, false);
+  }
+
+  /* ---------------- ② 琴键：支持到 6 个八度 ---------------- */
+  var OCTAVE_PRESETS = [
+    { name: '1 个八度', value: 1 },
+    { name: '1.5 个八度', value: 1.5 },
+    { name: '2 个八度', value: 2 },
+    { name: '2.5 个八度', value: 2.5 },
+    { name: '3 个八度', value: 3 },
+    { name: '3.5 个八度', value: 3.5 },
+    { name: '4 个八度', value: 4 },
+    { name: '4.5 个八度', value: 4.5 },
+    { name: '5 个八度', value: 5 },
+    { name: '5.5 个八度', value: 5.5 },
+    { name: '6 个八度', value: 6 },
+    { name: '6.5 个八度', value: 6.5 },
+    { name: '7 个八度', value: 7 },
+  ];
+
+  function rebuildOctaveButtons() {
+    var host = $('p2kPurePresets');
+    if (!host) return false;
+    var existing = [].slice.call(host.children);
+    // 已经有 6 个八度就不用重建
+    if (existing.some(function (b) { return /6(\.5)? 个八度/.test(b.textContent || ''); })) return true;
+
+    host.replaceChildren();
+    OCTAVE_PRESETS.forEach(function (preset) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = preset.name;
+      button.setAttribute('data-octaves', String(preset.value));
+      button.addEventListener('click', function () {
+        try {
+          if (window.p2kPhonePlay && typeof window.p2kPhonePlay.setOctaves === 'function') {
+            window.p2kPhonePlay.setOctaves(preset.value);
+          } else {
+            // 退路：直接点标题里带同名数值的原按钮
+            var target = existing.find(function (b) { return (b.textContent || '').indexOf(preset.name) === 0; });
+            if (target) target.click();
+          }
+        } catch (e) { /* 忽略 */ }
+        [].slice.call(host.children).forEach(function (b) { b.classList.toggle('on', b === button); });
+      }, false);
+      host.appendChild(button);
+    });
+    return true;
+  }
+
+  /* 给 p2kPhonePlay 补一个 setOctaves（原模块可能没有） */
+  function patchPhonePlay() {
+    var play = window.p2kPhonePlay;
+    if (!play || play.__p2kOctavePatched) return;
+    play.__p2kOctavePatched = true;
+    if (typeof play.setOctaves !== 'function') {
+      play.setOctaves = function (value) {
+        try {
+          // 复用页面原有按钮（同名数值）来切换，保证内部状态一致
+          var host = $('p2kPurePresets');
+          if (host) {
+            var target = [].slice.call(host.children).find(function (b) {
+              return Number(b.getAttribute('data-octaves')) === Number(value);
+            });
+            if (target) { target.click(); return true; }
+          }
+        } catch (e) { /* 忽略 */ }
+        return false;
+      };
+    }
+  }
+
+  function boot() {
+    hookSaveLocal();
+    patchPhonePlay();
+    rebuildOctaveButtons();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    boot();
+    if (tries > 200) clearInterval(timer);
+  }, 800);
+
+  window.p2kEnhance = { pushToRepo: pushToRepo, rebuildOctaveButtons: rebuildOctaveButtons };
+})();
 </script></body></html>
 
 
