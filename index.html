@@ -21963,6 +21963,155 @@ if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.s
 
   window.p2kRepoView = { open: openRepoPdf, renderBytes: renderBytes };
 })();
+</script><script>
+/* ============================================================================
+   谱键 P2K · 公网页也能看谱（自带 PDF）
+   ----------------------------------------------------------------------------
+   公网页没有后端，拿不到电脑上的 PDF。
+   这里改为从公网页自己的 assets/pdfs/ 取（发版时已随页面一起发布）。
+   ========================================================================== */
+(function () {
+  'use strict';
+  function $(id) { return document.getElementById(id); }
+
+  var manifest = null;
+  var cache = {};
+
+  async function loadManifest() {
+    if (manifest) return manifest;
+    try {
+      var res = await fetch('./assets/pdfs/index.json', { cache: 'no-store' });
+      if (!res.ok) return null;
+      manifest = await res.json();
+      return manifest;
+    } catch (e) { return null; }
+  }
+
+  function b64ToBytes(text) {
+    var clean = String(text).replace(/\s+/g, '');
+    var binary = atob(clean);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  async function loadPdf(item) {
+    if (cache[item.slug]) return cache[item.slug];
+    var res = await fetch('./assets/pdfs/' + item.b64, { cache: 'force-cache' });
+    if (!res.ok) throw new Error('取谱失败 HTTP ' + res.status);
+    var text = await res.text();
+    var bytes = b64ToBytes(text);
+    cache[item.slug] = bytes;
+    return bytes;
+  }
+
+  /* 用主画布渲染（已验证可用的路径） */
+  var libCache = null;
+  async function getLib() {
+    if (libCache && libCache.getDocument) return libCache;
+    var mod = await import('./assets/pdfjs/pdf.min.mjs');
+    var lib = (mod && mod.getDocument) ? mod : (mod && mod.default);
+    if (!lib || !lib.getDocument) throw new Error('pdf.js 未就绪');
+    try {
+      lib.GlobalWorkerOptions.workerSrc = new URL('./assets/pdfjs/pdf.worker.min.mjs', location.href).href;
+    } catch (e) { /* 忽略 */ }
+    libCache = lib;
+    return lib;
+  }
+
+  async function render(bytes, title) {
+    var lib = await getLib();
+    var doc = await lib.getDocument({ data: bytes.slice ? bytes.slice() : bytes, isEvalSupported: false }).promise;
+    window.pdf = doc;
+    window.pdfBytes = bytes;
+    var select = $('page');
+    if (select) {
+      select.replaceChildren();
+      for (var i = 1; i <= doc.numPages; i++) select.appendChild(new Option(String(i), String(i)));
+      select.value = '1';
+      select.disabled = false;
+    }
+    var fit = $('fitPage');
+    if (fit) fit.disabled = false;
+    var canvas = $('score');
+    if (canvas) {
+      var page = await doc.getPage(1);
+      var viewport = page.getViewport({ scale: 1.5 });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvas.style.width = '100%';
+      canvas.style.height = 'auto';
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+    }
+    var nameEl = $('filename');
+    if (nameEl) nameEl.textContent = title || '曲谱';
+    var source = $('source');
+    if (source) source.textContent = '公网自带曲谱 · 可离线查看';
+    var rec = $('recognize');
+    if (rec) rec.disabled = false;
+  }
+
+  async function openByTitle(title) {
+    var list = await loadManifest();
+    if (!list || !list.items || !list.items.length) return false;
+    var key = String(title || '').trim().toLowerCase();
+    var item = list.items.find(function (x) { return x.title.toLowerCase() === key; });
+    if (!item) item = list.items.find(function (x) { return x.title.toLowerCase().indexOf(key) >= 0; });
+    if (!item) return false;
+    var status = $('status');
+    if (status) status.textContent = '正在打开「' + item.title + '」…';
+    try {
+      var bytes = await loadPdf(item);
+      await render(bytes, item.title);
+      if (status) status.textContent = '已打开「' + item.title + '」（' + item.sizeText + '）';
+      return true;
+    } catch (error) {
+      if (status) status.textContent = '打开失败：' + String(error.message || error);
+      return false;
+    }
+  }
+
+  /* 公网页里给「查看」按钮接管：优先本地后端，失败就用自带 PDF */
+  function hook() {
+    var host = $('p2kStudioSearch');
+    if (!host) return;
+    var rows = host.querySelectorAll('div');
+    [].slice.call(rows).forEach(function (row) {
+      var btn = row.querySelector ? row.querySelector('button') : null;
+      if (!btn || !/查看/.test(btn.textContent || '')) return;
+      if (btn.__p2kSelfHosted) return;
+      var strong = row.querySelector('strong');
+      var title = strong ? strong.textContent.trim() : '';
+      if (!title) return;
+      // 只在「本地后端取不到」时接管
+      btn.__p2kSelfHosted = true;
+      btn.addEventListener('click', function (event) {
+        var hasBackend = true;
+        try {
+          hasBackend = !/github\.io$|gitee\.io$|netlify\.app$|vercel\.app$|pages\.dev$/i.test(location.hostname);
+        } catch (e) { hasBackend = true; }
+        if (hasBackend) return;   // 本地/局域网：让页面自己的逻辑处理
+        event.preventDefault();
+        event.stopPropagation();
+        openByTitle(title);
+      }, true);
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', hook, { once: true });
+  } else {
+    hook();
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    hook();
+    if (tries > 300) clearInterval(timer);
+  }, 900);
+
+  window.p2kSelfHostedPdf = { open: openByTitle, manifest: loadManifest };
+})();
 </script></body></html>
 
 
